@@ -2,11 +2,10 @@
 name: CI
 
 # yamllint disable-line rule:truthy
+# Larry Boy Advanced builds only the Brick family, in larry.yaml. This full
+# three-platform build from upstream NextUI is kept for running by hand.
 on:
-  push:
-    branches:
-      - main
-  pull_request: {}
+  workflow_dispatch: {}
 
 permissions:
   attestations: write

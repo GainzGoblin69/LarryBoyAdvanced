@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <msettings.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <dirent.h>
 #include <ctype.h>
 #include <unistd.h>
@@ -11,6 +12,7 @@
 #include "api.h"
 #include "utils.h"
 #include "config.h"
+#include "larry.h"
 #include <sys/resource.h>
 #include <pthread.h>
 #include <assert.h>
@@ -134,6 +136,9 @@ typedef struct Entry {
 	char* unique;
 	int type;
 	int alpha; // index in parent Directory's alphas Array, which points to the index of an Entry in its entries Array :sweat_smile:
+	int rom_id; // Larry Boy Advanced: the game's id in RomM, 0 for anything not from the library
+	int remote; // in the RomM library but not downloaded to the card yet
+	char* art; // cover from the RomM cache, used when the folder has none of its own
 } Entry;
 
 static Entry* Entry_new(char* path, int type) {
@@ -145,6 +150,9 @@ static Entry* Entry_new(char* path, int type) {
 	self->unique = NULL;
 	self->type = type;
 	self->alpha = 0;
+	self->rom_id = 0;
+	self->remote = 0;
+	self->art = NULL;
 	return self;
 }
 
@@ -158,6 +166,7 @@ static void Entry_free(Entry* self) {
 	free(self->path);
 	free(self->name);
 	if (self->unique) free(self->unique);
+	if (self->art) free(self->art);
 	free(self);
 }
 
@@ -356,6 +365,7 @@ static Array* getRecents(void);
 static Array* getCollection(char* path);
 static Array* getDiscs(char* path);
 static Array* getEntries(char* path);
+static Array* getLibrary(char* path);
 
 static Directory* Directory_new(char* path, int selected) {
 	char display_name[256];
@@ -378,6 +388,9 @@ static Directory* Directory_new(char* path, int selected) {
 	}
 	else if (suffixMatch(".m3u", path)) {
 		self->entries = getDiscs(path);
+	}
+	else if (Larry_platformForDir(path)) {
+		self->entries = getLibrary(path);
 	}
 	else {
 		self->entries = getEntries(path);
@@ -695,6 +708,7 @@ static int hasRoms(char* dir_name) {
 		}
 		closedir(dh);
 	}
+	if (!has && Larry_platformForDir(rom_path)) has = 1;
 	// if (!has) printf("No roms for %s!\n", dir_name);
 	return has;
 }
@@ -871,6 +885,11 @@ static Array* getRoot(void) {
 
     // Move entries to root
 	Array_yoink(root, entries);
+
+	// Larry Boy Advanced: refreshing the RomM library, and the first setup
+	if (Larry_installed()) {
+		Array_push(root, Entry_newNamed(LARRY_SYNC_PATH, ENTRY_PAK, LARRY_SYNC_NAME));
+	}
 
 	// Add tools if applicable
     if (hasTools() && CFG_getShowTools() && !simple_mode) {
@@ -1078,6 +1097,77 @@ static Array* getEntries(char* path){
 	else addEntries(entries, path); // just a subfolder
 
 	EntryArray_sort(entries);
+	return entries;
+}
+
+///////////////////////////////////////
+// Larry Boy Advanced: console folders that list the whole RomM library
+
+// Alphabetical, or games already on the card first when the player asks.
+static int LibraryArray_sortEntry(const void* a, const void* b) {
+	Entry* item1 = *(Entry**)a;
+	Entry* item2 = *(Entry**)b;
+	if (Larry_sortReadyFirst() && item1->remote != item2->remote) return item1->remote - item2->remote;
+	return strcasecmp(item1->name, item2->name);
+}
+static void LibraryArray_sort(Array* self) {
+	qsort(self->items, self->count, sizeof(void*), LibraryArray_sortEntry);
+}
+
+// Whether path is the folder holding a game laid out as several files, eg.
+// "<rom dir>/Game" for "<rom dir>/Game/Game.m3u".
+static int holdsPath(const char* folder, const char* path) {
+	size_t len = strlen(folder);
+	return strncmp(folder, path, len) == 0 && path[len] == '/';
+}
+
+// Every game RomM has for the console in path, downloaded or not, plus any of
+// the player's own files the library does not know about.
+static Array* getLibrary(char* path) {
+	Array* entries = Array_new();
+
+	LarryGame* games = NULL;
+	int count = Larry_loadGames(Larry_platformForDir(path), &games);
+	for (int i = 0; i < count; i++) {
+		LarryGame* game = &games[i];
+
+		// Until it is downloaded a game has no file, so it stands at the path
+		// it will have, which keeps recents and resume lookups well-formed.
+		char rom_path[MAX_PATH];
+		if (game->downloaded) snprintf(rom_path, sizeof(rom_path), "%s", game->local_path);
+		else snprintf(rom_path, sizeof(rom_path), "%s/%s", path, game->file_name);
+
+		// A game laid out as a folder of discs opens like any other folder.
+		int type = ENTRY_ROM;
+		struct stat info;
+		if (game->downloaded && stat(rom_path, &info) == 0 && S_ISDIR(info.st_mode)) type = ENTRY_DIR;
+
+		Entry* entry = Entry_new(rom_path, type);
+		if (game->name[0]) {
+			free(entry->name);
+			entry->name = strdup(game->name);
+		}
+		entry->rom_id = game->rom_id;
+		entry->remote = !game->downloaded;
+		if (game->art_path[0]) entry->art = strdup(game->art_path);
+		Array_push(entries, entry);
+	}
+
+	Array* local = getEntries(path);
+	for (int i = 0; i < local->count; i++) {
+		Entry* file = local->items[i];
+		int known = 0;
+		for (int j = 0; j < count && !known; j++) {
+			if (!games[j].downloaded) continue;
+			if (exactMatch(games[j].local_path, file->path) || holdsPath(file->path, games[j].local_path)) known = 1;
+		}
+		if (known) Entry_free(file);
+		else Array_push(entries, file);
+	}
+	Array_free(local); // its entries were either kept or freed above
+
+	Larry_freeGames(games, count);
+	LibraryArray_sort(entries);
 	return entries;
 }
 
@@ -1534,7 +1624,24 @@ static void toggleQuick(Entry* self)
 	}
 }
 
+// Larry Boy Advanced screens, defined further down beside the other drawing code.
+static int Larry_prepareGame(Entry* entry);
+static void Larry_syncLibrary(void);
+
 static void Entry_open(Entry* self) {
+	if (self->type==ENTRY_PAK && exactMatch(self->path, LARRY_SYNC_PATH)) {
+		Larry_syncLibrary();
+		return;
+	}
+	if (self->rom_id > 0) {
+		// downloads the game if need be, then brings down its newest save
+		if (!Larry_prepareGame(self)) return;
+		if (self->type==ENTRY_DIR) {
+			openDirectory(self->path, 1);
+			return;
+		}
+	}
+
 	recent_alias = self->name;  // yiiikes
 	if (self->type==ENTRY_ROM) {
 		startgame = 1;
@@ -2245,6 +2352,400 @@ void cleanupImageLoaderPool() {
 }
 ///////////////////////////////////////
 
+///////////////////////////////////////
+// Larry Boy Advanced: setup, sync and download screens
+//
+// Each of these takes over the screen until it is done, then asks the menu to
+// repaint everything it had drawn.
+
+#define LARRY_SKIP_SETUP_PATH "/tmp/larry-setup-later"
+
+static void Larry_afterModal(void) {
+	GFX_clearLayers(LAYER_ALL);
+	folderbgchanged = 1;
+	thumbchanged = 1;
+	PAD_reset();
+}
+
+// Wraps text to max_width at spaces, breaking words that are too long on
+// their own (addresses mostly) wherever they must. Existing line breaks stay.
+static void Larry_wrap(TTF_Font* ttf, const char* in, char* out, size_t size, int max_width) {
+	size_t o = 0;
+	size_t line_start = 0; // in out
+	size_t last_space = 0; // in out; 0 means none on this line
+	for (size_t i = 0; in[i] && o + 2 < size; i++) {
+		char c = in[i];
+		out[o++] = c;
+		out[o] = '\0';
+		if (c == '\n') {
+			line_start = o;
+			last_space = 0;
+			continue;
+		}
+		if (c == ' ') last_space = o;
+
+		// measure only at the end of a character, not inside UTF-8
+		unsigned char next = (unsigned char)in[i + 1];
+		if ((next & 0xC0) == 0x80) continue;
+
+		int w = 0;
+		TTF_SizeUTF8(ttf, out + line_start, &w, NULL);
+		if (w <= max_width) continue;
+
+		if (last_space > line_start) {
+			out[last_space - 1] = '\n';
+			line_start = last_space;
+			last_space = 0;
+		}
+		else if (o - line_start > 1) {
+			// move the character that did not fit onto a new line
+			size_t char_start = o - 1;
+			while (char_start > line_start && ((unsigned char)out[char_start] & 0xC0) == 0x80) char_start--;
+			if (o + 1 >= size) break;
+			memmove(out + char_start + 1, out + char_start, o - char_start);
+			out[char_start] = '\n';
+			o++;
+			out[o] = '\0';
+			line_start = char_start + 1;
+			last_space = 0;
+		}
+	}
+	out[o] = '\0';
+}
+
+// Draws a title, a block of text, an optional progress bar (percent < 0 for
+// none) and the button hints, then shows the frame.
+static void Larry_draw(const char* title, const char* body, int percent, const char* progress_text, char** hints) {
+	GFX_clearLayers(LAYER_ALL);
+	GFX_clear(screen);
+
+	int margin = SCALE1(PADDING * 4);
+	int width = screen->w - margin * 2;
+	SDL_Color text_color = uintToColour(THEME_COLOR4_255);
+	SDL_Color dim = { text_color.r / 2, text_color.g / 2, text_color.b / 2, 255 };
+
+	char wrapped[1024];
+	Larry_wrap(font.large, title ? title : "", wrapped, sizeof(wrapped), width);
+	int title_lines = 1;
+	for (char* c = wrapped; *c; c++) if (*c == '\n') title_lines++;
+	int title_h = TTF_FontHeight(font.large) * title_lines;
+	GFX_blitMessage(font.large, wrapped, screen, &(SDL_Rect){ margin, margin, width, title_h });
+
+	int y = margin + title_h + SCALE1(PADDING * 2);
+	int bar_space = percent >= 0 ? SCALE1(PADDING * 6) : 0;
+	int hint_space = SCALE1(PILL_SIZE + PADDING * 2);
+	int body_h = screen->h - y - bar_space - hint_space;
+
+	if (body && body[0] && body_h > 0) {
+		Larry_wrap(font.large, body, wrapped, sizeof(wrapped), width);
+		GFX_blitMessage(font.large, wrapped, screen, &(SDL_Rect){ margin, y, width, body_h });
+	}
+
+	if (percent >= 0) {
+		if (percent > 100) percent = 100;
+		int bar_y = screen->h - hint_space - bar_space + SCALE1(PADDING);
+		int bar_h = SCALE1(6);
+		SDL_FillRect(screen, &(SDL_Rect){ margin, bar_y, width, bar_h }, SDL_MapRGB(screen->format, dim.r, dim.g, dim.b));
+		SDL_FillRect(screen, &(SDL_Rect){ margin, bar_y, width * percent / 100, bar_h }, SDL_MapRGB(screen->format, text_color.r, text_color.g, text_color.b));
+		if (progress_text && progress_text[0]) {
+			GFX_blitMessage(font.small, (char*)progress_text, screen, &(SDL_Rect){ margin, bar_y + bar_h + SCALE1(PADDING), width, TTF_FontHeight(font.small) });
+		}
+	}
+
+	if (hints) GFX_blitButtonGroup(hints, 0, screen, 1);
+	GFX_flip(screen);
+}
+
+// Shows a message until A or B is pressed. Returns 1 for A.
+static int Larry_ask(const char* title, const char* body, char** hints) {
+	Larry_draw(title, body, -1, NULL, hints);
+	PAD_reset();
+	int answer = -1;
+	while (answer < 0) {
+		GFX_startFrame();
+		PAD_poll();
+		if (PAD_justPressed(BTN_A)) answer = 1;
+		else if (PAD_justPressed(BTN_B)) answer = 0;
+		GFX_sync();
+	}
+	Larry_afterModal();
+	return answer;
+}
+
+static void Larry_tell(const char* title, const char* body) {
+	Larry_ask(title, body, (char*[]){ "A", "OK", NULL });
+}
+
+static const char* Larry_stageLabel(const char* stage) {
+	if (!strcmp(stage, "connect")) return "Connecting to RomM";
+	if (!strcmp(stage, "approve")) return "Waiting for approval";
+	if (!strcmp(stage, "platforms")) return "Reading your consoles";
+	if (!strcmp(stage, "games")) return "Reading your games";
+	if (!strcmp(stage, "art")) return "Getting cover art";
+	if (!strcmp(stage, "rom")) return "Downloading";
+	if (!strcmp(stage, "extract")) return "Unpacking";
+	if (!strcmp(stage, "bios")) return "Getting BIOS files";
+	if (!strcmp(stage, "saves")) return "Checking saves";
+	return "Starting";
+}
+
+static void Larry_formatBytes(long long bytes, char* out, size_t size) {
+	if (bytes >= 1024LL * 1024 * 1024) snprintf(out, size, "%.1f GB", bytes / (1024.0 * 1024 * 1024));
+	else snprintf(out, size, "%.1f MB", bytes / (1024.0 * 1024));
+}
+
+// Runs larry-sync with a screen that follows its progress. B cancels. Returns
+// the exit code, and leaves what it reported in *result.
+static int Larry_run(const char* title, const char* const* args, LarryJob* result) {
+	memset(result, 0, sizeof(LarryJob));
+	LarryJob* job = LarryJob_start(args);
+	if (!job) {
+		snprintf(result->error, sizeof(result->error), "Could not start larry-sync.");
+		result->exit_code = LARRY_EXIT_FAILED;
+		return LARRY_EXIT_FAILED;
+	}
+
+	PWR_disableSleep(); // a download should not be cut short by the screen timing out
+	PAD_reset();
+
+	LarryJob shown;
+	memset(&shown, 0, sizeof(shown));
+	shown.percent = -2; // forces the first draw
+	int cancelling = 0;
+
+	while (1) {
+		GFX_startFrame();
+		PAD_poll();
+		if (!cancelling && PAD_justPressed(BTN_B)) {
+			LarryJob_cancel(job);
+			cancelling = 1;
+			shown.percent = -2;
+		}
+
+		LarryJob now;
+		LarryJob_snapshot(job, &now);
+		if (now.finished) {
+			memcpy(result, &now, sizeof(LarryJob));
+			break;
+		}
+
+		if (now.percent != shown.percent || strcmp(now.stage, shown.stage) || strcmp(now.pair_url, shown.pair_url) || strcmp(now.info, shown.info)) {
+			char body[1024];
+			char progress[64] = "";
+			int percent = -1;
+
+			if (cancelling) {
+				snprintf(body, sizeof(body), "Stopping...");
+			}
+			else if (!strcmp(now.stage, "approve") && now.pair_url[0]) {
+				snprintf(body, sizeof(body), "On your phone or computer, open this address and approve the device:\n\n%s", now.pair_url);
+			}
+			else {
+				const char* detail = now.detail;
+				// the platform names are worth showing; a server address is not
+				if (!strcmp(now.stage, "connect") || !strcmp(now.stage, "approve")) detail = "";
+				if (detail[0]) snprintf(body, sizeof(body), "%s\n%s", Larry_stageLabel(now.stage), detail);
+				else snprintf(body, sizeof(body), "%s", Larry_stageLabel(now.stage));
+
+				if (now.stage[0] && strcmp(now.stage, "connect")) {
+					percent = now.percent;
+					if (!strcmp(now.stage, "rom") && now.total > 0) {
+						char done[32], total[32];
+						Larry_formatBytes(now.done, done, sizeof(done));
+						Larry_formatBytes(now.total, total, sizeof(total));
+						snprintf(progress, sizeof(progress), "%s of %s", done, total);
+					}
+					else {
+						snprintf(progress, sizeof(progress), "%d%%", now.percent);
+					}
+				}
+			}
+
+			Larry_draw(title, body, percent, progress, cancelling ? NULL : (char*[]){ "B", "CANCEL", NULL });
+			memcpy(&shown, &now, sizeof(LarryJob));
+		}
+		else {
+			GFX_sync();
+		}
+	}
+
+	LarryJob_free(job);
+	if (!HAS_POWER_BUTTON && !simple_mode) PWR_disableSleep();
+	else PWR_enableSleep();
+	Larry_afterModal();
+	return result->exit_code;
+}
+
+// The reason a command failed, in words fit for the screen.
+static void Larry_failure(int code, LarryJob* result, char* out, size_t size) {
+	if (code == LARRY_EXIT_UNREACHABLE) snprintf(out, size, "Could not reach your RomM server. Check Wi-Fi, and that the server is running.");
+	else if (code == LARRY_EXIT_NOT_PAIRED) snprintf(out, size, "This device is no longer linked to RomM. Choose %s to link it again.", LARRY_SYNC_NAME);
+	else if (result->error[0]) snprintf(out, size, "%s", result->error);
+	else snprintf(out, size, "Something went wrong (code %d).", code);
+}
+
+// Links this device to the RomM server named in romm-server.txt.
+static int Larry_pair(void) {
+	char url[LARRY_PATH];
+	int insecure = 0;
+	while (!Larry_serverAddress(url, sizeof(url), &insecure)) {
+		if (!Larry_ask("Link to RomM",
+				"Put your RomM server's address in romm-server.txt, in the top folder of the SD card. "
+				"For example: http://192.168.1.20:8080",
+				(char*[]){ "B", "LATER", "A", "TRY AGAIN", NULL }))
+			return 0;
+	}
+
+	while (!PWR_isOnline()) {
+		if (!Larry_ask("Link to RomM",
+				"Wi-Fi is not connected. Choose LATER, connect in Tools > Settings > Network, then choose " LARRY_SYNC_NAME ".",
+				(char*[]){ "B", "LATER", "A", "TRY AGAIN", NULL }))
+			return 0;
+	}
+
+	const char* args[] = { "pair", "--url", url, "--name", "Larry Boy Advanced", insecure ? "--insecure" : NULL, NULL };
+	LarryJob result;
+	int code = Larry_run("Link to RomM", args, &result);
+	if (code == LARRY_EXIT_OK) return 1;
+	if (code == LARRY_EXIT_CANCELLED) return 0;
+
+	char why[LARRY_TEXT + 64];
+	Larry_failure(code, &result, why, sizeof(why));
+	Larry_tell("Could not link to RomM", why);
+	return 0;
+}
+
+// Rebuilds the menu from the top, after the library has changed.
+static void Larry_rebuildMenu(void) {
+	Larry_reload();
+	DirectoryArray_free(stack);
+	stack = Array_new();
+	top = NULL;
+	openDirectory(SDCARD_PATH, 0);
+
+	// stay on the sync item, which is where the player was
+	int index = EntryArray_indexOf(top->entries, LARRY_SYNC_PATH);
+	if (index >= 0) {
+		top->selected = index;
+		int total = top->entries->count;
+		top->end = index + 1 > MAIN_ROW_COUNT ? index + 1 : MAIN_ROW_COUNT;
+		if (top->end > total) top->end = total;
+		top->start = top->end - MAIN_ROW_COUNT;
+		if (top->start < 0) top->start = 0;
+	}
+}
+
+// Brings the catalog up to date with the server, linking first if need be.
+// Returns 1 when the library synced.
+static int Larry_syncNow(void) {
+	if (!Larry_isPaired() && !Larry_pair()) return 0;
+
+	const char* args[] = { "sync", NULL };
+	LarryJob result;
+	int code = Larry_run("Syncing your RomM library", args, &result);
+	if (code == LARRY_EXIT_NOT_PAIRED) {
+		if (!Larry_pair()) return 0;
+		code = Larry_run("Syncing your RomM library", args, &result);
+	}
+	if (code == LARRY_EXIT_OK) return 1;
+	if (code == LARRY_EXIT_CANCELLED) return 0;
+
+	char why[LARRY_TEXT + 64];
+	Larry_failure(code, &result, why, sizeof(why));
+	Larry_tell("Could not sync the library", why);
+	return 0;
+}
+
+static void Larry_syncLibrary(void) {
+	if (Larry_syncNow() || Larry_hasCatalog()) Larry_rebuildMenu();
+}
+
+// On a card with no library yet: offers to link RomM and sync it before the
+// menu is built. Asked once per boot if the player says later.
+static void Larry_firstRun(void) {
+	if (!Larry_installed() || Larry_hasCatalog() || exists(LARRY_SKIP_SETUP_PATH)) return;
+
+	int start = Larry_ask("Welcome to Larry Boy Advanced",
+		"Let's link your RomM server and bring in your library. "
+		"Games download when you pick them.",
+		(char*[]){ "B", "LATER", "A", "START", NULL });
+	if (!start || !Larry_syncNow()) {
+		touch(LARRY_SKIP_SETUP_PATH);
+		return;
+	}
+	Larry_reload();
+}
+
+// Makes a library game ready to play: downloads it if it is not on the card,
+// and brings down its newest save. Returns 0 when it should not be launched.
+static int Larry_prepareGame(Entry* entry) {
+	int online = PWR_isOnline();
+	char body[LARRY_TEXT + 128];
+
+	if (entry->remote) {
+		if (!online) {
+			snprintf(body, sizeof(body), "Connect to Wi-Fi to download %s.", entry->name);
+			Larry_tell("Not downloaded yet", body);
+			return 0;
+		}
+	}
+	else if (!online || !Larry_isPaired()) {
+		return 1; // play what is on the card; saves catch up next time
+	}
+
+	char rom_id[16];
+	snprintf(rom_id, sizeof(rom_id), "%d", entry->rom_id);
+	const char* args[] = { "fetch", "--rom", rom_id, NULL };
+	LarryJob result;
+	int code = Larry_run(entry->name, args, &result);
+
+	if (!entry->remote) {
+		// Already here: a save check that did not work is no reason not to
+		// play, but backing out of it is.
+		return code != LARRY_EXIT_CANCELLED;
+	}
+
+	if (code == LARRY_EXIT_OK && result.rom_path[0] && exists(result.rom_path)) {
+		free(entry->path);
+		entry->path = strdup(result.rom_path);
+		entry->remote = 0;
+		struct stat info;
+		if (stat(entry->path, &info) == 0 && S_ISDIR(info.st_mode)) entry->type = ENTRY_DIR;
+		return 1;
+	}
+	if (code == LARRY_EXIT_CANCELLED) return 0;
+
+	char why[LARRY_TEXT + 64];
+	if (code == LARRY_EXIT_OK) snprintf(why, sizeof(why), "The download finished but the game file was not found.");
+	else Larry_failure(code, &result, why, sizeof(why));
+	Larry_tell("Could not download", why);
+	return 0;
+}
+
+// Flips a library folder between alphabetical and ready-to-play-first,
+// keeping the same game selected.
+static void Larry_toggleSort(Directory* dir) {
+	Entry* selected = dir->entries->count ? dir->entries->items[dir->selected] : NULL;
+	Larry_setSortReadyFirst(!Larry_sortReadyFirst());
+	LibraryArray_sort(dir->entries);
+
+	IntArray_free(dir->alphas);
+	dir->alphas = IntArray_new();
+	Directory_index(dir);
+
+	int total = dir->entries->count;
+	int index = 0;
+	for (int i = 0; i < total; i++) {
+		if (dir->entries->items[i] == selected) index = i;
+	}
+	dir->selected = index;
+	dir->start = index;
+	dir->end = dir->start + MAIN_ROW_COUNT;
+	if (dir->end > total) dir->end = total;
+	dir->start = dir->end - MAIN_ROW_COUNT;
+	if (dir->start < 0) dir->start = 0;
+}
+
 int main (int argc, char *argv[]) {
 	// LOG_info("time from launch to:\n");
 	// unsigned long main_begin = SDL_GetTicks();
@@ -2266,6 +2767,9 @@ int main (int argc, char *argv[]) {
 	PWR_init();
 	if (!HAS_POWER_BUTTON && !simple_mode) PWR_disableSleep();
 	// LOG_info("- power init: %lu\n", SDL_GetTicks() - main_begin);
+
+	// Larry Boy Advanced: link RomM and sync the library on a fresh card
+	Larry_firstRun();
 
 	// start my threaded image loader :D
 	initImageLoaderPool();
@@ -2626,6 +3130,11 @@ int main (int argc, char *argv[]) {
 				dirty = 1;
 
 				if (total>0) readyResume(top->entries->items[top->selected]);
+			}
+			else if (total>0 && PAD_justPressed(BTN_Y) && Larry_platformForDir(top->path)) {
+				Larry_toggleSort(top);
+				dirty = 1;
+				readyResume(top->entries->items[top->selected]);
 			}
 			else if (PAD_justPressed(BTN_B) && stack->count>1) {
 				closeDirectory();
@@ -3032,6 +3541,8 @@ int main (int argc, char *argv[]) {
 					if(CFG_getShowGameArt()) {
 						char thumbpath[1024];
 						snprintf(thumbpath, sizeof(thumbpath), "%s/.media/%s.png", rompath, res_copy);
+						if (entry->art && !exists(thumbpath) && exists(entry->art))
+							snprintf(thumbpath, sizeof(thumbpath), "%s", entry->art);
 						had_thumb = 0;
 						startLoadThumb(thumbpath, onThumbLoaded, NULL);
 						int max_w = (int)(screen->w - (screen->w * CFG_getGameArtWidth()));
@@ -3061,7 +3572,10 @@ int main (int argc, char *argv[]) {
 					}
 				}
 				else {
-					if (stack->count>1) {
+					if (stack->count>1 && Larry_platformForDir(top->path)) {
+						GFX_blitButtonGroup((char*[]){ "Y", Larry_sortReadyFirst() ? "A-Z" : "READY", "B","BACK", "A","OPEN", NULL }, 2, screen, 1);
+					}
+					else if (stack->count>1) {
 						GFX_blitButtonGroup((char*[]){ "B","BACK", "A","OPEN", NULL }, 1, screen, 1);
 					}
 					else {
@@ -3101,6 +3615,12 @@ int main (int argc, char *argv[]) {
 						if(!row_has_moved && row_is_selected) {
 							text_color = uintToColour(THEME_COLOR5_255);
 							notext = 1;
+						}
+						else if (entry->remote) {
+							// Larry Boy Advanced: in the library but not downloaded yet
+							text_color.r = text_color.r * 11 / 20;
+							text_color.g = text_color.g * 11 / 20;
+							text_color.b = text_color.b * 11 / 20;
 						}
 
 						SDL_LockMutex(fontMutex);

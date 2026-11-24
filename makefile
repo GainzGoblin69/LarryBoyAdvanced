@@ -30,15 +30,16 @@ ifeq ($(PLATFORM), desktop)
 else
 	TOOLCHAIN_FILE := makefile.toolchain
 endif
-RELEASE_BASE=NextUI-$(RELEASE_TIME)$(RELEASE_BETA)
+RELEASE_BASE=LarryBoyAdvanced-$(RELEASE_TIME)$(RELEASE_BETA)
 RELEASE_DOT:=$(shell find ./releases/. -regex ".*/${RELEASE_BASE}-[0-9]+-base\.zip" | wc -l | sed 's/ //g')
 RELEASE_NAME ?= $(RELEASE_BASE)-$(RELEASE_DOT)
 
 # Extra paks to ship
 VENDOR_DEST := ./build/VENDOR/Tools
 PACKAGE_URL_MAPPINGS := \
-	"https://github.com/UncleJunVIP/nextui-pak-store/releases/latest/download/Pak.Store.pakz nextui.pak_store.pakz" \
-	"https://github.com/LoveRetro/nextui-updater-pak/releases/latest/download/nextui.updater.pakz nextui.updater.pakz"
+	"https://github.com/UncleJunVIP/nextui-pak-store/releases/latest/download/Pak.Store.pakz nextui.pak_store.pakz"
+	# Larry Boy Advanced leaves out NextUI's updater pak: it installs stock
+	# NextUI, which would replace this firmware.
 	# add more URLs as needed
 
 ###########################################################
@@ -98,6 +99,13 @@ ifneq ($(PLATFORM), desktop)
 endif
 	cp ./workspace/$(PLATFORM)/libmsettings/libmsettings.so ./build/SYSTEM/$(PLATFORM)/lib
 	cp ./workspace/all/nextui/build/$(PLATFORM)/nextui.elf ./build/SYSTEM/$(PLATFORM)/bin/
+	# Larry Boy Advanced: the RomM service, built from the larry-sync repo by CI.
+	# Without it the firmware is plain NextUI, so a local build still works.
+	if [ -f ./workspace/$(PLATFORM)/larry/larry-sync ]; then \
+		cp ./workspace/$(PLATFORM)/larry/larry-sync ./build/SYSTEM/$(PLATFORM)/bin/ && \
+		mkdir -p ./build/SYSTEM/$(PLATFORM)/lib/larry && \
+		cp ./workspace/$(PLATFORM)/larry/lib/* ./build/SYSTEM/$(PLATFORM)/lib/larry/; \
+	fi
 	cp ./workspace/all/minarch/build/$(PLATFORM)/minarch.elf ./build/SYSTEM/$(PLATFORM)/bin/
 	cp ./workspace/all/nextval/build/$(PLATFORM)/nextval.elf ./build/SYSTEM/$(PLATFORM)/bin/
 	cp ./workspace/all/clock/build/$(PLATFORM)/clock.elf ./build/EXTRAS/Tools/$(PLATFORM)/Clock.pak/
@@ -272,7 +280,7 @@ package: tidy
 	
 	# TODO: can I just add everything in BASE to zip?
 	# cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves miyoo miyoo354 trimui rg35xx rg35xxplus gkdpixel miyoo355 magicx em_ui.sh MinUI.zip README.txt
-	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves Shaders Overlays trimui h700 em_ui.sh MinUI.zip *.pakz README.txt
+	cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-base.zip Bios Roms Saves Shaders Overlays trimui h700 em_ui.sh MinUI.zip *.pakz README.txt romm-server.txt
 	cd ./build/EXTRAS && zip -r ../../releases/$(RELEASE_NAME)-extras.zip Bios Emus Roms Saves Shaders Overlays Tools README.txt
 	echo "$(RELEASE_VERSION)" > ./build/latest.txt
 

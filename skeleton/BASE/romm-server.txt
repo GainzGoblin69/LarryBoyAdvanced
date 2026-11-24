@@ -1,0 +1,11 @@
+# Larry Boy Advanced: your RomM server
+#
+# Put your RomM server's address on a line below, with http:// or https://
+# and the port if it has one. For example:
+#
+#   http://192.168.1.20:8080
+#
+# If your server uses a self-signed certificate, add a line saying: insecure
+#
+# Lines starting with # are ignored.
+
