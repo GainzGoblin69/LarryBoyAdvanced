@@ -1104,13 +1104,17 @@ static Array* getEntries(char* path){
 // Larry Boy Advanced: console folders that list the whole RomM library
 
 // Alphabetical, or games already on the card first when the player asks.
+// The choice is read once per sort, not once per comparison: it is a file on
+// the card, and a large library makes tens of thousands of comparisons.
+static int library_ready_first = 0;
 static int LibraryArray_sortEntry(const void* a, const void* b) {
 	Entry* item1 = *(Entry**)a;
 	Entry* item2 = *(Entry**)b;
-	if (Larry_sortReadyFirst() && item1->remote != item2->remote) return item1->remote - item2->remote;
+	if (library_ready_first && item1->remote != item2->remote) return item1->remote - item2->remote;
 	return strcasecmp(item1->name, item2->name);
 }
 static void LibraryArray_sort(Array* self) {
+	library_ready_first = Larry_sortReadyFirst();
 	qsort(self->items, self->count, sizeof(void*), LibraryArray_sortEntry);
 }
 
