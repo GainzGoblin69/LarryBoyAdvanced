@@ -2896,6 +2896,27 @@ static void Larry_firstRun(void) {
 	Larry_reload();
 }
 
+// Says what the save check before playing found, when there is something to
+// say: a save brought down, a conflict, or a reason it could not look. Nothing
+// is said when the game is simply up to date, or has no save on RomM.
+static void Larry_reportSaves(Entry* entry, LarryJob* result) {
+	char body[LARRY_TEXT * 2];
+	if (result->saves_problem[0]) {
+		snprintf(body, sizeof(body), "Could not check RomM for a newer save: %s. The game will start with the save on this device.", result->saves_problem);
+		Larry_tell("Saves", body);
+	}
+	else if (result->saves_conflicts > 0) {
+		Larry_tell("Saves", "This game's save has changed both here and on RomM since they last matched, so neither was replaced. The game will start with the save on this device.");
+	}
+	else if (result->saves_errors > 0) {
+		Larry_tell("Saves", "A newer save is on RomM but could not be brought down. The game will start with the save on this device. Details are in .userdata/shared/larry/logs.");
+	}
+	else if (result->saves_downloaded > 0) {
+		snprintf(body, sizeof(body), "Got your latest save for %s from RomM.", entry->name);
+		Larry_flash("Saves", body);
+	}
+}
+
 // Makes a library game ready to play: downloads it if it is not on the card,
 // and brings down its newest save. Returns 0 when it should not be launched.
 static int Larry_prepareGame(Entry* entry) {
@@ -2919,11 +2940,13 @@ static int Larry_prepareGame(Entry* entry) {
 	LarryJob result;
 	int code = Larry_run(entry->name, args, &result);
 
+	if (code == LARRY_EXIT_CANCELLED) return 0;
+	if (code == LARRY_EXIT_OK) Larry_reportSaves(entry, &result);
+
 	if (!entry->remote) {
 		// Already here: a save check that did not work is no reason not to
-		// play, but backing out of it is. The game may have moved, as when an
-		// archive downloaded before unpacking existed is unpacked now.
-		if (code == LARRY_EXIT_CANCELLED) return 0;
+		// play. The game may have moved, as when an archive downloaded before
+		// unpacking existed is unpacked now.
 		if (code == LARRY_EXIT_OK && result.rom_path[0] && strcmp(result.rom_path, entry->path) && exists(result.rom_path)) {
 			free(entry->path);
 			entry->path = strdup(result.rom_path);

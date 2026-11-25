@@ -877,6 +877,10 @@ static void handleLine(LarryJob* job, char* line) {
 	else if (strcmp(kind, "RESULT") == 0 && count >= 3) {
 		if (strcmp(fields[1], "rom_path") == 0) copyText(job->rom_path, sizeof(job->rom_path), fields[2]);
 		else if (strcmp(fields[1], "pair_url") == 0) copyText(job->pair_url, sizeof(job->pair_url), fields[2]);
+		else if (strcmp(fields[1], "saves_downloaded") == 0) job->saves_downloaded = atoi(fields[2]);
+		else if (strcmp(fields[1], "saves_conflicts") == 0) job->saves_conflicts = atoi(fields[2]);
+		else if (strcmp(fields[1], "saves_errors") == 0) job->saves_errors = atoi(fields[2]);
+		else if (strcmp(fields[1], "saves_problem") == 0) copyText(job->saves_problem, sizeof(job->saves_problem), fields[2]);
 	}
 	pthread_mutex_unlock(&job->lock);
 }
@@ -955,6 +959,7 @@ LarryJob* LarryJob_start(const char* const* args) {
 	job->pid = pid;
 	job->fd = pipefd[0];
 	job->exit_code = -1;
+	job->saves_downloaded = job->saves_conflicts = job->saves_errors = -1;
 	pthread_mutex_init(&job->lock, NULL);
 	if (pthread_create(&job->thread, NULL, readJob, job) != 0) {
 		kill(-pid, SIGTERM);

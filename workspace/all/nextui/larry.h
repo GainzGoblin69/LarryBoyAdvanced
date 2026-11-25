@@ -167,6 +167,11 @@ typedef struct LarryJob {
 	long long total;
 	char rom_path[LARRY_PATH];
 	char pair_url[LARRY_PATH];
+	// what the save check found: -1 when it did not report
+	int saves_downloaded;
+	int saves_conflicts;
+	int saves_errors;
+	char saves_problem[LARRY_TEXT]; // why saves could not be checked
 	int finished;
 	int exit_code;
 	int cancelled;
