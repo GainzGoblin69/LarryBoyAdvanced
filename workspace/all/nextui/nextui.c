@@ -2921,8 +2921,16 @@ static int Larry_prepareGame(Entry* entry) {
 
 	if (!entry->remote) {
 		// Already here: a save check that did not work is no reason not to
-		// play, but backing out of it is.
-		return code != LARRY_EXIT_CANCELLED;
+		// play, but backing out of it is. The game may have moved, as when an
+		// archive downloaded before unpacking existed is unpacked now.
+		if (code == LARRY_EXIT_CANCELLED) return 0;
+		if (code == LARRY_EXIT_OK && result.rom_path[0] && strcmp(result.rom_path, entry->path) && exists(result.rom_path)) {
+			free(entry->path);
+			entry->path = strdup(result.rom_path);
+			struct stat info;
+			if (stat(entry->path, &info) == 0 && S_ISDIR(info.st_mode)) entry->type = ENTRY_DIR;
+		}
+		return 1;
 	}
 
 	if (code == LARRY_EXIT_OK && result.rom_path[0] && exists(result.rom_path)) {
