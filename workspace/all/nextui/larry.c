@@ -850,6 +850,28 @@ void Larry_freeGames(LarryGame* games, int count) {
 // running larry-sync
 
 static void handleLine(LarryJob* job, char* line) {
+	if (strncmp(line, "SAVE\t", 5) == 0) {
+		// SAVE id slot updated age bytes newest on_device devices emulator file
+		char* f[11] = { 0 };
+		if (splitTabs(line, f, 11) < 11) return;
+		pthread_mutex_lock(&job->lock);
+		if (job->save_count < LARRY_SAVES_MAX) {
+			LarrySave* save = &job->saves[job->save_count++];
+			save->id = atoi(f[1]);
+			copyText(save->slot, sizeof(save->slot), f[2]);
+			save->updated = atoll(f[3]);
+			copyText(save->age, sizeof(save->age), f[4]);
+			save->bytes = atoll(f[5]);
+			save->newest = f[6][0] == '1';
+			save->on_device = f[7][0] == '1';
+			copyText(save->devices, sizeof(save->devices), f[8]);
+			copyText(save->emulator, sizeof(save->emulator), f[9]);
+			copyText(save->file, sizeof(save->file), f[10]);
+		}
+		pthread_mutex_unlock(&job->lock);
+		return;
+	}
+
 	char* fields[4] = { 0 };
 	int count = splitTabs(line, fields, 4);
 	if (count < 1) return;
@@ -881,6 +903,8 @@ static void handleLine(LarryJob* job, char* line) {
 		else if (strcmp(fields[1], "saves_conflicts") == 0) job->saves_conflicts = atoi(fields[2]);
 		else if (strcmp(fields[1], "saves_errors") == 0) job->saves_errors = atoi(fields[2]);
 		else if (strcmp(fields[1], "saves_problem") == 0) copyText(job->saves_problem, sizeof(job->saves_problem), fields[2]);
+		else if (strcmp(fields[1], "save_path") == 0) copyText(job->save_path, sizeof(job->save_path), fields[2]);
+		else if (strcmp(fields[1], "promoted") == 0) job->promoted = fields[2][0] == '1';
 	}
 	pthread_mutex_unlock(&job->lock);
 }

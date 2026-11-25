@@ -149,6 +149,21 @@ typedef enum {
 // called between checks, about every half second.
 LarryWifiOutcome Larry_wifiWatch(int timeout_ms, char* ssid, size_t ssid_size, int (*should_stop)(void));
 
+// One of a game's saves on the server, from list-saves.
+#define LARRY_SAVES_MAX 48
+typedef struct LarrySave {
+	int id;
+	char slot[32];
+	long long updated; // unix seconds
+	char age[32];      // "9 days ago", worked out by larry-sync
+	long long bytes;
+	int newest;        // the newest in its slot
+	int on_device;     // the one this device has
+	char devices[96];  // devices that hold it
+	char emulator[32];
+	char file[160];
+} LarrySave;
+
 // A running larry-sync command and what it has reported so far. The fields
 // below lock are written by a reader thread; read them through
 // LarryJob_snapshot.
@@ -172,6 +187,12 @@ typedef struct LarryJob {
 	int saves_conflicts;
 	int saves_errors;
 	char saves_problem[LARRY_TEXT]; // why saves could not be checked
+	// list-saves: the saves listed, newest first
+	LarrySave saves[LARRY_SAVES_MAX];
+	int save_count;
+	// choose-save: where the chosen save went
+	char save_path[LARRY_PATH];
+	int promoted;
 	int finished;
 	int exit_code;
 	int cancelled;
