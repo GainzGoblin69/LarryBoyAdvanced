@@ -3,7 +3,9 @@ name: Larry Boy Advanced
 
 # Builds the firmware for the TrimUI Brick family (tg5040: Brick, Brick Hammer,
 # Brick Pro, Smart Pro) with larry-sync, the RomM service, built in. The result
-# is one zip to unzip onto a fresh SD card, kept as a download on the run.
+# is one zip to unzip onto a fresh SD card. Builds of main, and builds started
+# by hand, are published as releases, so the newest is always on the Releases
+# page and the older ones stay there as a history.
 
 # yamllint disable-line rule:truthy
 on:
@@ -17,6 +19,11 @@ on:
         description: "larry-sync branch, tag or commit to build in"
         required: false
         default: ""
+      publish:
+        description: "Publish this build as a release"
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read
@@ -179,3 +186,41 @@ jobs:
           name: ${{ env.RELEASE_NAME }}-tg5040
           path: releases/${{ env.RELEASE_NAME }}-all.zip
           if-no-files-found: error
+
+  release:
+    needs: firmware
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    steps:
+      - name: Download firmware
+        uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: LarryBoyAdvanced-*
+          path: release/
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          ZIP=$(ls release/*-all.zip)
+          NAME=$(basename "$ZIP" -all.zip)
+          TAG="build-${NAME#LarryBoyAdvanced-}"
+          cat > notes.md <<NOTES
+          Larry Boy Advanced for the TrimUI Brick family (Brick, Brick Hammer, Brick Pro, Smart Pro).
+
+          Built from \`$BRANCH\` at ${GITHUB_SHA::7}.
+
+          **To install:** format a microSD card as FAT32, unzip this onto it, add your RomM server's address to \`romm-server.txt\`, then put the card in and power on.
+          NOTES
+          gh release create "$TAG" "$ZIP" \
+            --target "$GITHUB_SHA" \
+            --title "Larry Boy Advanced ${NAME#LarryBoyAdvanced-}" \
+            --notes-file notes.md \
+            --latest

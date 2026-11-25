@@ -10,8 +10,8 @@ Your newest save comes down before you play and goes back up when you stop.
 
 ## Installing
 
-1. Download the latest build from the Actions tab: open the newest
-   **Larry Boy Advanced** run and download the zip at the bottom of the page.
+1. Download the newest `LarryBoyAdvanced-…-all.zip` from
+   [Releases](https://github.com/GainzGoblin69/LarryBoyAdvanced/releases/latest).
 2. Format a spare microSD card as FAT32 and unzip the build onto it.
 3. Open `romm-server.txt` at the top of the card and add your RomM server's
    address, for example `http://192.168.1.20:8080`.
