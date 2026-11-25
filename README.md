@@ -18,9 +18,22 @@ Your newest save comes down before you play and goes back up when you stop.
 4. Put the card in the device and turn it on. NextUI installs itself, then
    Larry Boy Advanced walks you through linking RomM.
 
-Wi-Fi is set up in **Tools > Settings > Network**. If it is not connected on
-first boot, choose LATER, connect, then pick **Sync RomM Library** at the
-bottom of the main menu.
+Two more files at the top of the card are optional:
+
+- `wifi.txt`: your Wi-Fi networks, each a `network:` line and a `password:`
+  line. The device switches Wi-Fi on, saves them in its own memory, and joins
+  whichever is in range.
+- `retroachievements.txt`: your RetroAchievements `username:` and
+  `password:`. The device signs in once Wi-Fi is connected.
+
+Each is applied whenever you change it. Wi-Fi can also be set up in
+**Tools > Settings > Network**. If it is not connected on first boot, choose
+LATER, connect, then pick **Sync RomM Library** at the bottom of the main
+menu.
+
+To update an installed card, copy only `MinUI.zip` from a new build to the
+top of the card: unzipping the whole build would replace these files with
+blank templates.
 
 ## Using it
 

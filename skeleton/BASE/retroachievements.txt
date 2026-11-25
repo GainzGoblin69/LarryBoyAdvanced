@@ -1,0 +1,12 @@
+# Larry Boy Advanced: RetroAchievements sign-in
+#
+# Fill in your RetroAchievements username and password below. When this file
+# changes, the device signs in the next time Wi-Fi is connected, the same as
+# Settings > RetroAchievements > Authenticate.
+#
+# This file is left as you write it, so your password stays here in plain
+# text. Keep the card to yourself, or empty the password once you see
+# "Signed in": the device stays signed in without it.
+
+username:
+password:

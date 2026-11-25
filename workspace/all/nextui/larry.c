@@ -230,6 +230,336 @@ int Larry_serverAddress(char* out, size_t size, int* insecure) {
 }
 
 ///////////////////////////////////////
+// settings files on the card
+
+// Splits "key: value" into a lowercased key and a trimmed value, in place.
+// Returns 0 for a line that is blank, a comment, or not of that form.
+static int keyValue(char* line, char** key, char** value) {
+	chomp(line);
+	char* start = line;
+	while (*start == ' ' || *start == '\t') start++;
+	if (!*start || *start == '#') return 0;
+
+	char* colon = strchr(start, ':');
+	if (!colon) return 0;
+	*colon = '\0';
+
+	char* end = colon;
+	while (end > start && (end[-1] == ' ' || end[-1] == '\t')) *--end = '\0';
+	for (char* c = start; *c; c++) if (*c >= 'A' && *c <= 'Z') *c += 'a' - 'A';
+
+	char* v = colon + 1;
+	while (*v == ' ' || *v == '\t') v++;
+	end = v + strlen(v);
+	while (end > v && (end[-1] == ' ' || end[-1] == '\t')) *--end = '\0';
+
+	*key = start;
+	*value = v;
+	return 1;
+}
+
+static int isHex64(const char* s) {
+	if (strlen(s) != 64) return 0;
+	for (; *s; s++) {
+		if (!((*s >= '0' && *s <= '9') || (*s >= 'a' && *s <= 'f') || (*s >= 'A' && *s <= 'F'))) return 0;
+	}
+	return 1;
+}
+
+static void addProblem(char* problem, size_t size, const char* text) {
+	if (!problem || !size || problem[0]) return; // the first one is enough
+	copyText(problem, size, text);
+}
+
+// Adds the network being read, if it can be used. A later entry with the same
+// name replaces an earlier one.
+static int finishNetwork(LarryWifiNetwork* current, int have, LarryWifiNetwork* out, int count, int max, char* problem, size_t problem_size) {
+	if (!have || !current->ssid[0]) return count;
+
+	size_t len = strlen(current->password);
+	if (len && (len < 8 || len > 63) && !isHex64(current->password)) {
+		char text[LARRY_TEXT];
+		snprintf(text, sizeof(text), "The password for %s must be 8 to 63 characters.", current->ssid);
+		addProblem(problem, problem_size, text);
+		return count;
+	}
+
+	for (int i = 0; i < count; i++) {
+		if (strcmp(out[i].ssid, current->ssid) == 0) {
+			out[i] = *current;
+			return count;
+		}
+	}
+	if (count >= max) return count;
+	out[count] = *current;
+	return count + 1;
+}
+
+int Larry_readWifiFile(const char* path, LarryWifiNetwork* out, int max, char* problem, size_t problem_size) {
+	if (problem && problem_size) problem[0] = '\0';
+	FILE* file = fopen(path, "r");
+	if (!file) return 0;
+
+	int count = 0;
+	int have = 0;         // reading a network
+	int has_password = 0; // and its password line has been read
+	LarryWifiNetwork current;
+	memset(&current, 0, sizeof(current));
+
+	char line[LARRY_TEXT];
+	while (fgets(line, sizeof(line), file)) {
+		char *key, *value;
+		if (!keyValue(line, &key, &value)) continue;
+
+		if (!strcmp(key, "network") || !strcmp(key, "name") || !strcmp(key, "ssid")) {
+			count = finishNetwork(&current, have, out, count, max, problem, problem_size);
+			memset(&current, 0, sizeof(current));
+			have = 1;
+			has_password = 0;
+			if (strlen(value) > LARRY_SSID_MAX) {
+				char text[LARRY_TEXT];
+				snprintf(text, sizeof(text), "The network name %.40s is longer than Wi-Fi allows.", value);
+				addProblem(problem, problem_size, text);
+				have = 0;
+				continue;
+			}
+			copyText(current.ssid, sizeof(current.ssid), value);
+		}
+		else if (!strcmp(key, "password") || !strcmp(key, "pass")) {
+			// Each network takes the first password after its name. Another,
+			// with no network of its own, is a slip and changes nothing.
+			if (!have || has_password) continue;
+			has_password = 1;
+			if (strlen(value) > LARRY_PSK_MAX) {
+				char text[LARRY_TEXT];
+				snprintf(text, sizeof(text), "The password for %s must be 8 to 63 characters.", current.ssid);
+				addProblem(problem, problem_size, text);
+				have = 0;
+				continue;
+			}
+			copyText(current.password, sizeof(current.password), value);
+		}
+	}
+	count = finishNetwork(&current, have, out, count, max, problem, problem_size);
+	fclose(file);
+	return count;
+}
+
+int Larry_readRAFile(const char* path, char* username, size_t username_size, char* password, size_t password_size) {
+	copyText(username, username_size, "");
+	copyText(password, password_size, "");
+	FILE* file = fopen(path, "r");
+	if (!file) return 0;
+
+	char line[LARRY_TEXT];
+	while (fgets(line, sizeof(line), file)) {
+		char *key, *value;
+		if (!keyValue(line, &key, &value)) continue;
+		if (!strcmp(key, "username") || !strcmp(key, "user")) copyText(username, username_size, value);
+		else if (!strcmp(key, "password") || !strcmp(key, "pass")) copyText(password, password_size, value);
+	}
+	fclose(file);
+	return username[0] && password[0];
+}
+
+// FNV-1a over the file's bytes, as 16 hex digits; "" if it cannot be read.
+static void fingerprint(const char* path, char* out, size_t size) {
+	copyText(out, size, "");
+	FILE* file = fopen(path, "rb");
+	if (!file) return;
+	unsigned long long hash = 1469598103934665603ULL;
+	int c;
+	while ((c = fgetc(file)) != EOF) {
+		hash ^= (unsigned char)c;
+		hash *= 1099511628211ULL;
+	}
+	fclose(file);
+	snprintf(out, size, "%016llx", hash);
+}
+
+int Larry_isApplied(const char* path, const char* stamp) {
+	char now[32];
+	fingerprint(path, now, sizeof(now));
+	if (!now[0]) return 1;
+
+	char applied[32] = "";
+	FILE* file = fopen(stamp, "r");
+	if (file) {
+		if (fgets(applied, sizeof(applied), file)) chomp(applied);
+		fclose(file);
+	}
+	return strcmp(now, applied) == 0;
+}
+
+void Larry_markApplied(const char* path, const char* stamp) {
+	char now[32];
+	fingerprint(path, now, sizeof(now));
+	mkdir(LARRY_HOME, 0755);
+	FILE* file = fopen(stamp, "w");
+	if (!file) return;
+	fprintf(file, "%s\n", now);
+	fclose(file);
+}
+
+///////////////////////////////////////
+// Wi-Fi, through wpa_cli
+
+// Runs wpa_cli with the given command words, no shell in between, so names
+// and passwords need no quoting. Returns its exit status, -1 if it could not
+// run; its output goes to out.
+static int wpaCli(char* out, size_t size, const char* const* words) {
+	if (size) out[0] = '\0';
+
+	const char* argv[16] = { "wpa_cli", "-p", LARRY_WPA_SOCKETS, "-i", LARRY_WPA_INTERFACE };
+	int argc = 5;
+	for (int i = 0; words[i] && argc < 15; i++) argv[argc++] = words[i];
+	argv[argc] = NULL;
+
+	int pipefd[2];
+	if (pipe(pipefd) != 0) return -1;
+	pid_t pid = fork();
+	if (pid < 0) {
+		close(pipefd[0]);
+		close(pipefd[1]);
+		return -1;
+	}
+	if (pid == 0) {
+		dup2(pipefd[1], STDOUT_FILENO);
+		int devnull = open("/dev/null", O_RDWR);
+		if (devnull >= 0) {
+			dup2(devnull, STDIN_FILENO);
+			dup2(devnull, STDERR_FILENO);
+		}
+		for (int fd = 3; fd < 256; fd++) close(fd);
+		execvp("wpa_cli", (char* const*)argv);
+		_exit(127);
+	}
+	close(pipefd[1]);
+
+	size_t used = 0;
+	char buffer[512];
+	ssize_t n;
+	while ((n = read(pipefd[0], buffer, sizeof(buffer))) > 0 || (n < 0 && errno == EINTR)) {
+		if (n <= 0) continue;
+		if (used + 1 < size) {
+			size_t take = (size_t)n;
+			if (take > size - 1 - used) take = size - 1 - used;
+			memcpy(out + used, buffer, take);
+			used += take;
+			out[used] = '\0';
+		}
+	}
+	close(pipefd[0]);
+
+	int status = 0;
+	while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {}
+	return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+static int wpaOK(const char* out) {
+	return strncmp(out, "OK", 2) == 0;
+}
+
+int Larry_wifiReady(int timeout_ms) {
+	char out[64];
+	for (int waited = 0; ; waited += 250) {
+		const char* ping[] = { "ping", NULL };
+		if (wpaCli(out, sizeof(out), ping) == 0 && strncmp(out, "PONG", 4) == 0) return 1;
+		if (waited >= timeout_ms) return 0;
+		usleep(250 * 1000);
+	}
+}
+
+// The ids of saved networks called ssid; returns how many, up to max.
+static int savedIds(const char* ssid, int* ids, int max) {
+	char list[8192];
+	const char* words[] = { "list_networks", NULL };
+	if (wpaCli(list, sizeof(list), words) != 0) return 0;
+
+	int count = 0;
+	char* line = strchr(list, '\n'); // the first line is a header
+	while (line && count < max) {
+		line++;
+		char* next = strchr(line, '\n');
+		if (next) *next = '\0';
+
+		// id \t ssid \t bssid \t flags
+		char* fields[4];
+		if (splitTabs(line, fields, 4) >= 2 && fields[0][0] >= '0' && fields[0][0] <= '9' && !strcmp(fields[1], ssid)) {
+			ids[count++] = atoi(fields[0]);
+		}
+		line = next;
+	}
+	return count;
+}
+
+// Adds one network, after removing any saved under its name. Returns 1 if
+// wpa_supplicant took it.
+static int saveNetwork(const LarryWifiNetwork* network) {
+	char out[256];
+	char id[16];
+
+	int ids[8];
+	int existing = savedIds(network->ssid, ids, 8);
+	for (int i = 0; i < existing; i++) {
+		snprintf(id, sizeof(id), "%d", ids[i]);
+		const char* remove[] = { "remove_network", id, NULL };
+		wpaCli(out, sizeof(out), remove);
+	}
+
+	const char* add[] = { "add_network", NULL };
+	if (wpaCli(out, sizeof(out), add) != 0 || out[0] < '0' || out[0] > '9') return 0;
+	snprintf(id, sizeof(id), "%d", atoi(out));
+
+	// The name goes in as hex, which wpa_supplicant takes for any characters.
+	char ssid[LARRY_SSID_MAX * 2 + 1];
+	size_t len = strlen(network->ssid);
+	for (size_t i = 0; i < len; i++) snprintf(ssid + i * 2, 3, "%02x", (unsigned char)network->ssid[i]);
+	const char* set_ssid[] = { "set_network", id, "ssid", ssid, NULL };
+	int ok = wpaCli(out, sizeof(out), set_ssid) == 0 && wpaOK(out);
+
+	if (ok && network->password[0]) {
+		// a passphrase in quotes; 64 hex digits is a key and goes in bare
+		char psk[LARRY_PSK_MAX + 3];
+		if (isHex64(network->password)) snprintf(psk, sizeof(psk), "%s", network->password);
+		else snprintf(psk, sizeof(psk), "\"%s\"", network->password);
+		const char* set_psk[] = { "set_network", id, "psk", psk, NULL };
+		ok = wpaCli(out, sizeof(out), set_psk) == 0 && wpaOK(out);
+	}
+	else if (ok) {
+		const char* set_open[] = { "set_network", id, "key_mgmt", "NONE", NULL };
+		ok = wpaCli(out, sizeof(out), set_open) == 0 && wpaOK(out);
+	}
+
+	if (ok) {
+		const char* enable[] = { "enable_network", id, NULL };
+		ok = wpaCli(out, sizeof(out), enable) == 0 && wpaOK(out);
+	}
+	if (!ok) {
+		const char* remove[] = { "remove_network", id, NULL };
+		wpaCli(out, sizeof(out), remove);
+	}
+	return ok;
+}
+
+int Larry_wifiSave(const LarryWifiNetwork* networks, int count) {
+	if (!Larry_wifiReady(0)) return -1;
+
+	int saved = 0;
+	for (int i = 0; i < count; i++) saved += saveNetwork(&networks[i]);
+
+	char out[64];
+	const char* save[] = { "save_config", NULL };
+	if (wpaCli(out, sizeof(out), save) != 0 || !wpaOK(out)) return -1;
+
+	// Only acts when not already connected: then it looks for any saved
+	// network in range, new ones included.
+	const char* reconnect[] = { "reconnect", NULL };
+	wpaCli(out, sizeof(out), reconnect);
+	return saved;
+}
+
+///////////////////////////////////////
 // the catalog
 
 static LarryPlatform* platforms = NULL;

@@ -14,6 +14,7 @@
 #include "config.h"
 #include "larry.h"
 #include "larry_qr.h"
+#include "ra_auth.h"
 #include <sys/resource.h>
 #include <pthread.h>
 #include <assert.h>
@@ -2634,6 +2635,27 @@ static void Larry_failure(int code, LarryJob* result, char* out, size_t size) {
 	else snprintf(out, size, "Something went wrong (code %d).", code);
 }
 
+// Waits up to seconds for Wi-Fi to connect, on a screen B skips. Returns 1
+// once online. With Wi-Fi switched off there is nothing to wait for.
+static int Larry_waitOnline(int seconds, const char* why) {
+	if (PWR_isOnline()) return 1;
+	if (!CFG_getWifi()) return 0;
+
+	Larry_draw("Connecting to Wi-Fi", why, -1, NULL, (char*[]){ "B", "SKIP", NULL });
+	PAD_reset();
+	int online = 0;
+	Uint32 until = SDL_GetTicks() + seconds * 1000;
+	while (!online && SDL_GetTicks() < until) {
+		GFX_startFrame();
+		PAD_poll();
+		if (PAD_justPressed(BTN_B)) break;
+		online = PWR_isOnline();
+		GFX_sync();
+	}
+	Larry_afterModal();
+	return online;
+}
+
 // Links this device to the RomM server named in romm-server.txt.
 static int Larry_pair(void) {
 	char url[LARRY_PATH];
@@ -2646,6 +2668,8 @@ static int Larry_pair(void) {
 			return 0;
 	}
 
+	// Just after boot Wi-Fi is often still connecting.
+	Larry_waitOnline(15, "Linking to RomM needs Wi-Fi.");
 	while (!PWR_isOnline()) {
 		if (!Larry_ask("Link to RomM",
 				"Wi-Fi is not connected. Choose LATER, connect in Tools > Settings > Network, then choose " LARRY_SYNC_NAME ".",
@@ -2708,6 +2732,118 @@ static int Larry_syncNow(void) {
 
 static void Larry_syncLibrary(void) {
 	if (Larry_syncNow() || Larry_hasCatalog()) Larry_rebuildMenu();
+}
+
+// Shows a short confirmation that needs no button press.
+static void Larry_flash(const char* title, const char* body) {
+	Larry_draw(title, body, -1, NULL, NULL);
+	SDL_Delay(1500);
+	Larry_afterModal();
+}
+
+// wifi.txt: saves its networks in the device's Wi-Fi settings, which live in
+// its own memory and outlast the card, and switches Wi-Fi on. Done once each
+// time the file changes; tried again next time if Wi-Fi would not start.
+static void Larry_applyWifiFile(void) {
+	if (!WIFI_supported() || Larry_isApplied(LARRY_WIFI_FILE, LARRY_WIFI_APPLIED)) return;
+
+	LarryWifiNetwork networks[16];
+	char problem[LARRY_TEXT];
+	int count = Larry_readWifiFile(LARRY_WIFI_FILE, networks, 16, problem, sizeof(problem));
+	char body[LARRY_TEXT * 2];
+
+	if (count == 0) {
+		// the template as shipped, or nothing usable
+		if (problem[0]) {
+			snprintf(body, sizeof(body), "%s Fix it in wifi.txt on the SD card.", problem);
+			Larry_tell("Wi-Fi", body);
+		}
+		Larry_markApplied(LARRY_WIFI_FILE, LARRY_WIFI_APPLIED);
+		return;
+	}
+
+	snprintf(body, sizeof(body), "Saving %d network%s from wifi.txt...", count, count == 1 ? "" : "s");
+	Larry_draw("Wi-Fi", body, -1, NULL, NULL);
+
+	// Writing networks in wifi.txt asks for Wi-Fi, so it is switched on.
+	if (!CFG_getWifi()) WIFI_enable(true);
+
+	int saved = Larry_wifiReady(10000) ? Larry_wifiSave(networks, count) : -1;
+	if (saved < 0) {
+		Larry_tell("Wi-Fi", "Wi-Fi did not start, so the networks in wifi.txt were not saved. They will be tried again next time.");
+		return;
+	}
+	Larry_markApplied(LARRY_WIFI_FILE, LARRY_WIFI_APPLIED);
+
+	if (saved < count || problem[0]) {
+		snprintf(body, sizeof(body), "Saved %d of the networks in wifi.txt. %s", saved, problem[0] ? problem : "");
+		Larry_tell("Wi-Fi", body);
+	}
+	else {
+		snprintf(body, sizeof(body), "Saved %d network%s. The device joins whichever is in range.", saved, saved == 1 ? "" : "s");
+		Larry_flash("Wi-Fi", body);
+	}
+}
+
+// retroachievements.txt: signs in the way Settings > RetroAchievements >
+// Authenticate does, keeping the token games sign in with. The file is left
+// as written. Done once each time it changes; a sign-in that could not reach
+// the server is tried again on later starts.
+#define LARRY_RA_WAITED_PATH "/tmp/larry-ra-waited"
+static void Larry_applyRAFile(void) {
+	if (Larry_isApplied(LARRY_RA_FILE, LARRY_RA_APPLIED)) return;
+
+	char username[64], password[128];
+	if (!Larry_readRAFile(LARRY_RA_FILE, username, sizeof(username), password, sizeof(password))) {
+		Larry_markApplied(LARRY_RA_FILE, LARRY_RA_APPLIED); // the template, or half filled in
+		return;
+	}
+
+	CFG_setRAUsername(username);
+	CFG_setRAPassword(password);
+	CFG_setRAEnable(true);
+
+	// Wait for Wi-Fi once a boot; after that, only sign in when it is there,
+	// so coming back from a game is never held up.
+	if (!PWR_isOnline()) {
+		if (exists(LARRY_RA_WAITED_PATH)) return;
+		touch(LARRY_RA_WAITED_PATH);
+		if (!Larry_waitOnline(15, "Signing in to RetroAchievements needs Wi-Fi.")) return;
+	}
+
+	char body[LARRY_TEXT * 2];
+	snprintf(body, sizeof(body), "Signing in as %s...", username);
+	Larry_draw("RetroAchievements", body, -1, NULL, NULL);
+
+	RA_AuthResponse response;
+	memset(&response, 0, sizeof(response));
+	RA_AuthResult result = RA_authenticateSync(username, password, &response);
+
+	if (result == RA_AUTH_SUCCESS) {
+		CFG_setRAToken(response.token);
+		CFG_setRAAuthenticated(true);
+		Larry_markApplied(LARRY_RA_FILE, LARRY_RA_APPLIED);
+		snprintf(body, sizeof(body), "Signed in as %s.", response.display_name[0] ? response.display_name : username);
+		Larry_flash("RetroAchievements", body);
+	}
+	else if (result == RA_AUTH_ERROR_INVALID) {
+		CFG_setRAToken("");
+		CFG_setRAAuthenticated(false);
+		Larry_markApplied(LARRY_RA_FILE, LARRY_RA_APPLIED); // not again until the file changes
+		snprintf(body, sizeof(body), "Could not sign in: %s Check retroachievements.txt on the SD card.",
+			response.error_message[0] ? response.error_message : "the username or password was not accepted.");
+		Larry_tell("RetroAchievements", body);
+	}
+	else {
+		Larry_afterModal(); // could not reach the server: next time
+	}
+}
+
+// Applies the settings files on the card, Wi-Fi first so the sign-in after
+// it can use the network.
+static void Larry_applySetupFiles(void) {
+	Larry_applyWifiFile();
+	Larry_applyRAFile();
 }
 
 // On a card with no library yet: offers to link RomM and sync it before the
@@ -2818,7 +2954,9 @@ int main (int argc, char *argv[]) {
 	if (!HAS_POWER_BUTTON && !simple_mode) PWR_disableSleep();
 	// LOG_info("- power init: %lu\n", SDL_GetTicks() - main_begin);
 
-	// Larry Boy Advanced: link RomM and sync the library on a fresh card
+	// Larry Boy Advanced: Wi-Fi and RetroAchievements from the card, then
+	// linking RomM and syncing the library on a fresh card
+	Larry_applySetupFiles();
 	Larry_firstRun();
 
 	// start my threaded image loader :D

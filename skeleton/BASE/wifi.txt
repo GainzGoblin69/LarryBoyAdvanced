@@ -1,0 +1,16 @@
+# Larry Boy Advanced: Wi-Fi networks
+#
+# Add each network as a "network:" line followed by its "password:" line,
+# like the example below. When this file changes, the device switches Wi-Fi
+# on and saves the networks in its own memory, then joins whichever one is
+# in range. Saved networks stay saved even if you format the card.
+#
+#   network: Home Wi-Fi
+#   password: my wifi password
+#
+#   network: Library Free Wi-Fi
+#   password:
+#
+# Leave the password empty for an open network. Lines starting with # are
+# ignored.
+

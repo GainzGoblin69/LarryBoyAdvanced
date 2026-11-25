@@ -22,6 +22,18 @@
 #define LARRY_BINARY SYSTEM_PATH "/bin/larry-sync"
 #define LARRY_SERVER_FILE SDCARD_PATH "/romm-server.txt"
 
+// Settings the player can write on the card before first boot. Each is
+// applied when its contents change; a fingerprint of what was applied last is
+// kept beside the RomM settings.
+#define LARRY_WIFI_FILE SDCARD_PATH "/wifi.txt"
+#define LARRY_RA_FILE SDCARD_PATH "/retroachievements.txt"
+#define LARRY_WIFI_APPLIED LARRY_HOME "/wifi.applied"
+#define LARRY_RA_APPLIED LARRY_HOME "/retroachievements.applied"
+
+// How NextUI reaches wpa_supplicant on the Brick family.
+#define LARRY_WPA_SOCKETS "/etc/wifi/sockets"
+#define LARRY_WPA_INTERFACE "wlan0"
+
 // Stands in for a path in the root list: opening it refreshes the library.
 #define LARRY_SYNC_PATH SDCARD_PATH "/.larry-sync"
 #define LARRY_SYNC_NAME "Sync RomM Library"
@@ -94,6 +106,35 @@ void Larry_wrapText(const char* in, char* out, size_t size, int max_width, Larry
 // The user code in a pairing address (its user_code parameter), or "" if it
 // has none.
 void Larry_pairCode(const char* url, char* out, size_t size);
+
+// A Wi-Fi network from wifi.txt.
+#define LARRY_SSID_MAX 32
+#define LARRY_PSK_MAX 64
+typedef struct LarryWifiNetwork {
+	char ssid[LARRY_SSID_MAX + 1];
+	char password[LARRY_PSK_MAX + 1]; // "" for an open network
+} LarryWifiNetwork;
+
+// Reads wifi.txt: "network:" lines, each followed by its "password:" line.
+// Returns how many networks it holds, up to max. A network it cannot use (a
+// password of the wrong length, say) is left out and described in problem.
+int Larry_readWifiFile(const char* path, LarryWifiNetwork* out, int max, char* problem, size_t problem_size);
+
+// Reads retroachievements.txt. Returns 1 when it has both a username and a
+// password.
+int Larry_readRAFile(const char* path, char* username, size_t username_size, char* password, size_t password_size);
+
+// Whether path's contents are what was last marked applied in stamp. A file
+// that does not exist counts as applied, so deleting one changes nothing.
+int Larry_isApplied(const char* path, const char* stamp);
+void Larry_markApplied(const char* path, const char* stamp);
+
+// Waits up to timeout_ms for wpa_supplicant to answer. Returns 1 if it did.
+int Larry_wifiReady(int timeout_ms);
+// Saves networks in wpa_supplicant's configuration, replacing any saved under
+// the same name, and lets it join whichever is in range. Returns how many were
+// saved, or -1 if wpa_supplicant could not be reached.
+int Larry_wifiSave(const LarryWifiNetwork* networks, int count);
 
 // A running larry-sync command and what it has reported so far. The fields
 // below lock are written by a reader thread; read them through
