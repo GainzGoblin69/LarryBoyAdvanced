@@ -28,6 +28,7 @@
 #define LARRY_WIFI_FILE SDCARD_PATH "/wifi.txt"
 #define LARRY_RA_FILE SDCARD_PATH "/retroachievements.txt"
 #define LARRY_WIFI_APPLIED LARRY_HOME "/wifi.applied"
+#define LARRY_WIFI_LOG LARRY_HOME "/logs/wifi.log"
 #define LARRY_RA_APPLIED LARRY_HOME "/retroachievements.applied"
 
 // How NextUI reaches wpa_supplicant on the Brick family.
@@ -135,6 +136,18 @@ int Larry_wifiReady(int timeout_ms);
 // the same name, and lets it join whichever is in range. Returns how many were
 // saved, or -1 if wpa_supplicant could not be reached.
 int Larry_wifiSave(const LarryWifiNetwork* networks, int count);
+
+// What came of connecting after networks were saved.
+typedef enum {
+	LARRY_WIFI_CONNECTED,      // joined a network; its name is in ssid
+	LARRY_WIFI_WRONG_PASSWORD, // a network turned the password down; its name is in ssid
+	LARRY_WIFI_NONE_IN_RANGE,  // never got as far as trying a password
+} LarryWifiOutcome;
+
+// Watches wpa_supplicant for up to timeout_ms, or until should_stop returns
+// non-zero, and says how connecting went. should_stop may be NULL; it is
+// called between checks, about every half second.
+LarryWifiOutcome Larry_wifiWatch(int timeout_ms, char* ssid, size_t ssid_size, int (*should_stop)(void));
 
 // A running larry-sync command and what it has reported so far. The fields
 // below lock are written by a reader thread; read them through

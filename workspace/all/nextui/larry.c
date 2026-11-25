@@ -253,6 +253,13 @@ static int keyValue(char* line, char** key, char** value) {
 	end = v + strlen(v);
 	while (end > v && (end[-1] == ' ' || end[-1] == '\t')) *--end = '\0';
 
+	// "a value in quotes" is taken as what is between them
+	size_t len = strlen(v);
+	if (len >= 2 && ((v[0] == '"' && v[len - 1] == '"') || (v[0] == '\'' && v[len - 1] == '\''))) {
+		v[len - 1] = '\0';
+		v++;
+	}
+
 	*key = start;
 	*value = v;
 	return 1;
@@ -362,7 +369,9 @@ int Larry_readRAFile(const char* path, char* username, size_t username_size, cha
 	return username[0] && password[0];
 }
 
-// FNV-1a over the file's bytes, as 16 hex digits; "" if it cannot be read.
+// FNV-1a over the file's bytes, as 16 hex digits after a format number; ""
+// if it cannot be read. Raising the number has every file applied once more
+// on cards updated to the new firmware: 2 brought reporting on Wi-Fi.
 static void fingerprint(const char* path, char* out, size_t size) {
 	copyText(out, size, "");
 	FILE* file = fopen(path, "rb");
@@ -374,7 +383,7 @@ static void fingerprint(const char* path, char* out, size_t size) {
 		hash *= 1099511628211ULL;
 	}
 	fclose(file);
-	snprintf(out, size, "%016llx", hash);
+	snprintf(out, size, "2-%016llx", hash);
 }
 
 int Larry_isApplied(const char* path, const char* stamp) {
@@ -404,11 +413,54 @@ void Larry_markApplied(const char* path, const char* stamp) {
 ///////////////////////////////////////
 // Wi-Fi, through wpa_cli
 
+// The Wi-Fi log on the card, for working out a network that will not
+// connect. Passwords never go in it.
+static FILE* wifiLog(void) {
+	static FILE* log = NULL;
+	if (!log) {
+		mkdir(LARRY_HOME, 0755);
+		mkdir(LARRY_HOME "/logs", 0755);
+		// start afresh past 256 KB so it cannot grow without end
+		struct stat info;
+		int fresh = stat(LARRY_WIFI_LOG, &info) == 0 && info.st_size > 256 * 1024;
+		log = fopen(LARRY_WIFI_LOG, fresh ? "w" : "a");
+		if (log) setvbuf(log, NULL, _IOLBF, 0);
+	}
+	return log;
+}
+
+static void logLine(const char* text) {
+	FILE* log = wifiLog();
+	if (log) fprintf(log, "%s\n", text);
+}
+
+// Describes a password without giving it away: its length, and the slips
+// that most often stop one working.
+static void describePassword(const char* psk, char* out, size_t size) {
+	char inner[LARRY_PSK_MAX + 1];
+	size_t len = strlen(psk);
+	if (len >= 2 && psk[0] == '"' && psk[len - 1] == '"') {
+		snprintf(inner, sizeof(inner), "%.*s", (int)(len - 2), psk + 1);
+	}
+	else {
+		snprintf(out, size, "<a %zu-digit key>", len);
+		return;
+	}
+	len = strlen(inner);
+	snprintf(out, size, "<%zu characters%s%s%s%s>", len,
+		strchr(inner, ' ') ? ", with spaces" : "",
+		strchr(inner, '"') || strchr(inner, '\'') ? ", with quote marks" : "",
+		len && (inner[0] == ' ' || inner[len - 1] == ' ') ? ", space at an end" : "",
+		strchr(inner, '\\') ? ", with a backslash" : "");
+}
+
 // Runs wpa_cli with the given command words, no shell in between, so names
 // and passwords need no quoting. Returns its exit status, -1 if it could not
-// run; its output goes to out.
+// run; its output goes to out. Each command and its answer go in the log,
+// except the status checks Larry_wifiWatch makes, which it logs as changes.
 static int wpaCli(char* out, size_t size, const char* const* words) {
 	if (size) out[0] = '\0';
+	int quiet = words[0] && (!strcmp(words[0], "status") || !strcmp(words[0], "ping"));
 
 	const char* argv[16] = { "wpa_cli", "-p", LARRY_WPA_SOCKETS, "-i", LARRY_WPA_INTERFACE };
 	int argc = 5;
@@ -453,7 +505,24 @@ static int wpaCli(char* out, size_t size, const char* const* words) {
 
 	int status = 0;
 	while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {}
-	return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+	int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+
+	if (!quiet) {
+		char line[LARRY_TEXT * 2] = "wpa_cli";
+		for (int i = 0; words[i]; i++) {
+			char word[LARRY_TEXT];
+			if (i == 3 && !strcmp(words[0], "set_network") && !strcmp(words[2], "psk")) describePassword(words[i], word, sizeof(word));
+			else snprintf(word, sizeof(word), "%s", words[i]);
+			size_t used = strlen(line);
+			snprintf(line + used, sizeof(line) - used, " %s", word);
+		}
+		char answer[128];
+		snprintf(answer, sizeof(answer), "%.*s", (int)strcspn(out, "\n"), out);
+		size_t used = strlen(line);
+		snprintf(line + used, sizeof(line) - used, "  ->  %s (exit %d)", strchr(out, '\n') && strchr(out, '\n')[1] ? "(several lines)" : answer, code);
+		logLine(line);
+	}
+	return code;
 }
 
 static int wpaOK(const char* out) {
@@ -543,7 +612,19 @@ static int saveNetwork(const LarryWifiNetwork* network) {
 }
 
 int Larry_wifiSave(const LarryWifiNetwork* networks, int count) {
-	if (!Larry_wifiReady(0)) return -1;
+	logLine("--- saving networks from wifi.txt");
+	for (int i = 0; i < count; i++) {
+		char line[LARRY_TEXT * 2], quoted[LARRY_PSK_MAX + 3], described[LARRY_TEXT];
+		snprintf(quoted, sizeof(quoted), "\"%s\"", networks[i].password);
+		if (networks[i].password[0]) describePassword(isHex64(networks[i].password) ? networks[i].password : quoted, described, sizeof(described));
+		else snprintf(described, sizeof(described), "<none: an open network>");
+		snprintf(line, sizeof(line), "network \"%s\" (%zu bytes), password %s", networks[i].ssid, strlen(networks[i].ssid), described);
+		logLine(line);
+	}
+	if (!Larry_wifiReady(0)) {
+		logLine("wpa_supplicant is not answering");
+		return -1;
+	}
 
 	int saved = 0;
 	for (int i = 0; i < count; i++) saved += saveNetwork(&networks[i]);
@@ -556,7 +637,79 @@ int Larry_wifiSave(const LarryWifiNetwork* networks, int count) {
 	// network in range, new ones included.
 	const char* reconnect[] = { "reconnect", NULL };
 	wpaCli(out, sizeof(out), reconnect);
+
+	char list[4096];
+	const char* words[] = { "list_networks", NULL };
+	wpaCli(list, sizeof(list), words);
+	logLine("saved networks now:");
+	logLine(list);
 	return saved;
+}
+
+// Reads a "key=value" line from wpa_cli status output.
+static void statusField(const char* status, const char* key, char* out, size_t size) {
+	copyText(out, size, "");
+	size_t klen = strlen(key);
+	for (const char* line = status; line && *line; ) {
+		if (!strncmp(line, key, klen) && line[klen] == '=') {
+			const char* v = line + klen + 1;
+			snprintf(out, size, "%.*s", (int)strcspn(v, "\n"), v);
+			return;
+		}
+		line = strchr(line, '\n');
+		if (line) line++;
+	}
+}
+
+LarryWifiOutcome Larry_wifiWatch(int timeout_ms, char* ssid, size_t ssid_size, int (*should_stop)(void)) {
+	copyText(ssid, ssid_size, "");
+	char last_state[64] = "";
+	char tried[LARRY_SSID_MAX + 1] = ""; // a network that got as far as the password
+	int failures = 0;
+	int handshaking = 0;
+
+	for (int waited = 0; waited <= timeout_ms; waited += 500) {
+		char status[2048], state[64], name[LARRY_SSID_MAX * 4 + 1];
+		const char* words[] = { "status", NULL };
+		wpaCli(status, sizeof(status), words);
+		statusField(status, "wpa_state", state, sizeof(state));
+		statusField(status, "ssid", name, sizeof(name));
+
+		if (strcmp(state, last_state)) {
+			char line[LARRY_TEXT];
+			snprintf(line, sizeof(line), "after %d.%d s: %s %s", waited / 1000, (waited % 1000) / 100, state[0] ? state : "(no answer)", name);
+			logLine(line);
+			copyText(last_state, sizeof(last_state), state);
+		}
+
+		if (!strcmp(state, "COMPLETED")) {
+			copyText(ssid, ssid_size, name);
+			logLine("connected");
+			return LARRY_WIFI_CONNECTED;
+		}
+
+		// The password is checked in the 4-way handshake. Falling back from
+		// it to looking for a network, twice, means it was turned down.
+		if (!strcmp(state, "4WAY_HANDSHAKE") || !strcmp(state, "GROUP_HANDSHAKE")) {
+			handshaking = 1;
+			if (name[0]) copyText(tried, sizeof(tried), name);
+		}
+		else if (handshaking && (!strcmp(state, "DISCONNECTED") || !strcmp(state, "SCANNING") || !strcmp(state, "INACTIVE"))) {
+			handshaking = 0;
+			if (++failures >= 2) break;
+		}
+
+		if (should_stop && should_stop()) break;
+		usleep(500 * 1000);
+	}
+
+	if (failures > 0) {
+		copyText(ssid, ssid_size, tried);
+		logLine("a network turned the password down");
+		return LARRY_WIFI_WRONG_PASSWORD;
+	}
+	logLine("no saved network connected");
+	return LARRY_WIFI_NONE_IN_RANGE;
 }
 
 ///////////////////////////////////////

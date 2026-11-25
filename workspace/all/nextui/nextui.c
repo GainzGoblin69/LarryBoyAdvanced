@@ -2741,6 +2741,14 @@ static void Larry_flash(const char* title, const char* body) {
 	Larry_afterModal();
 }
 
+// For Larry_wifiWatch: whether B was pressed to stop waiting.
+static int Larry_skipped = 0;
+static int Larry_skipPressed(void) {
+	PAD_poll();
+	if (PAD_justPressed(BTN_B)) Larry_skipped = 1;
+	return Larry_skipped;
+}
+
 // wifi.txt: saves its networks in the device's Wi-Fi settings, which live in
 // its own memory and outlast the card, and switches Wi-Fi on. Done once each
 // time the file changes; tried again next time if Wi-Fi would not start.
@@ -2775,14 +2783,40 @@ static void Larry_applyWifiFile(void) {
 	}
 	Larry_markApplied(LARRY_WIFI_FILE, LARRY_WIFI_APPLIED);
 
-	if (saved < count || problem[0]) {
-		snprintf(body, sizeof(body), "Saved %d of the networks in wifi.txt. %s", saved, problem[0] ? problem : "");
+	// Watch it connect, so a password the router turns down is said here
+	// rather than found out later.
+	snprintf(body, sizeof(body), "Saved %d network%s. Connecting...", saved, saved == 1 ? "" : "s");
+	Larry_draw("Wi-Fi", body, -1, NULL, (char*[]){ "B", "SKIP", NULL });
+	PAD_reset();
+	char ssid[LARRY_SSID_MAX * 4 + 1];
+	LarryWifiOutcome outcome = Larry_wifiWatch(20000, ssid, sizeof(ssid), Larry_skipPressed);
+
+	char note[LARRY_TEXT + 64] = "";
+	if (saved < count) snprintf(note, sizeof(note), " %d could not be saved.", count - saved);
+	if (problem[0]) {
+		size_t used = strlen(note);
+		snprintf(note + used, sizeof(note) - used, " %s", problem);
+	}
+
+	if (outcome == LARRY_WIFI_CONNECTED) {
+		snprintf(body, sizeof(body), "Connected to %s.%s", ssid, note);
+		if (note[0]) Larry_tell("Wi-Fi", body);
+		else Larry_flash("Wi-Fi", body);
+	}
+	else if (outcome == LARRY_WIFI_WRONG_PASSWORD) {
+		snprintf(body, sizeof(body), "%s turned down the password in wifi.txt. Check it, then save the file again.%s",
+			ssid[0] ? ssid : "A network", note);
 		Larry_tell("Wi-Fi", body);
 	}
-	else {
-		snprintf(body, sizeof(body), "Saved %d network%s. The device joins whichever is in range.", saved, saved == 1 ? "" : "s");
-		Larry_flash("Wi-Fi", body);
+	else if (Larry_skipped) {
+		Larry_afterModal();
 	}
+	else {
+		snprintf(body, sizeof(body), "Saved %d network%s, but none connected. If one is in range, check its name in wifi.txt matches the network exactly.%s",
+			saved, saved == 1 ? "" : "s", note);
+		Larry_tell("Wi-Fi", body);
+	}
+	Larry_skipped = 0;
 }
 
 // retroachievements.txt: signs in the way Settings > RetroAchievements >
