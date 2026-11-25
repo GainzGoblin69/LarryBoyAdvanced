@@ -211,7 +211,9 @@ jobs:
         run: |
           ZIP=$(ls release/*-all.zip)
           NAME=$(basename "$ZIP" -all.zip)
-          TAG="build-${NAME#LarryBoyAdvanced-}"
+          # The build name holds only the date and branch, so two builds in a
+          # day would share it; the commit keeps each release's tag unique.
+          TAG="build-${NAME#LarryBoyAdvanced-}-${GITHUB_SHA::7}"
           cat > notes.md <<NOTES
           Larry Boy Advanced for the TrimUI Brick family (Brick, Brick Hammer, Brick Pro, Smart Pro).
 
@@ -221,6 +223,6 @@ jobs:
           NOTES
           gh release create "$TAG" "$ZIP" \
             --target "$GITHUB_SHA" \
-            --title "Larry Boy Advanced ${NAME#LarryBoyAdvanced-}" \
+            --title "Larry Boy Advanced ${NAME#LarryBoyAdvanced-} (${GITHUB_SHA::7})" \
             --notes-file notes.md \
             --latest
