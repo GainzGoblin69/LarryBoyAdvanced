@@ -81,6 +81,20 @@ void Larry_setSortReadyFirst(int on);
 // line says "insecure".
 int Larry_serverAddress(char* out, size_t size, int* insecure);
 
+// Measures how wide a line of text would be drawn, in pixels.
+typedef int (*LarryMeasure)(const char* text, void* context);
+
+// Wraps in into out so no line measures wider than max_width. Lines break at
+// spaces. A word too long for a line on its own, an address mostly, breaks
+// after its last '/', '?', '&', '=' or '-' that fits, and mid-word only when
+// it has none, so a split address still reads as two pieces with no gap in
+// between to mistake for a space. Line breaks already in the text stay.
+void Larry_wrapText(const char* in, char* out, size_t size, int max_width, LarryMeasure measure, void* context);
+
+// The user code in a pairing address (its user_code parameter), or "" if it
+// has none.
+void Larry_pairCode(const char* url, char* out, size_t size);
+
 // A running larry-sync command and what it has reported so far. The fields
 // below lock are written by a reader thread; read them through
 // LarryJob_snapshot.

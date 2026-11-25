@@ -39,6 +39,8 @@ bottom of the main menu.
 
 Larry Boy Advanced is a personal, non-commercial fork. NextUI is licensed
 under PolyForm Noncommercial 1.0.0 (see LICENSE and NOTICE); grout is MIT.
+QR codes are drawn with Project Nayuki's QR Code generator (MIT), vendored
+in `workspace/all/nextui/qrcodegen.c`.
 
 ---
 

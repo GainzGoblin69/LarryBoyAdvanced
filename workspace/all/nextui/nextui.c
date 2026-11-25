@@ -13,6 +13,7 @@
 #include "utils.h"
 #include "config.h"
 #include "larry.h"
+#include "larry_qr.h"
 #include <sys/resource.h>
 #include <pthread.h>
 #include <assert.h>
@@ -2371,50 +2372,22 @@ static void Larry_afterModal(void) {
 	PAD_reset();
 }
 
-// Wraps text to max_width at spaces, breaking words that are too long on
-// their own (addresses mostly) wherever they must. Existing line breaks stay.
+static int Larry_measure(const char* text, void* context) {
+	// only up to the end of the line being measured
+	char line[1024];
+	size_t len = strcspn(text, "\n");
+	if (len >= sizeof(line)) len = sizeof(line) - 1;
+	memcpy(line, text, len);
+	line[len] = '\0';
+	int w = 0;
+	TTF_SizeUTF8((TTF_Font*)context, line, &w, NULL);
+	return w;
+}
+
 static void Larry_wrap(TTF_Font* ttf, const char* in, char* out, size_t size, int max_width) {
-	size_t o = 0;
-	size_t line_start = 0; // in out
-	size_t last_space = 0; // in out; 0 means none on this line
-	for (size_t i = 0; in[i] && o + 2 < size; i++) {
-		char c = in[i];
-		out[o++] = c;
-		out[o] = '\0';
-		if (c == '\n') {
-			line_start = o;
-			last_space = 0;
-			continue;
-		}
-		if (c == ' ') last_space = o;
-
-		// measure only at the end of a character, not inside UTF-8
-		unsigned char next = (unsigned char)in[i + 1];
-		if ((next & 0xC0) == 0x80) continue;
-
-		int w = 0;
-		TTF_SizeUTF8(ttf, out + line_start, &w, NULL);
-		if (w <= max_width) continue;
-
-		if (last_space > line_start) {
-			out[last_space - 1] = '\n';
-			line_start = last_space;
-			last_space = 0;
-		}
-		else if (o - line_start > 1) {
-			// move the character that did not fit onto a new line
-			size_t char_start = o - 1;
-			while (char_start > line_start && ((unsigned char)out[char_start] & 0xC0) == 0x80) char_start--;
-			if (o + 1 >= size) break;
-			memmove(out + char_start + 1, out + char_start, o - char_start);
-			out[char_start] = '\n';
-			o++;
-			out[o] = '\0';
-			line_start = char_start + 1;
-			last_space = 0;
-		}
-	}
-	out[o] = '\0';
+	// GFX_blitMessage wraps again any line that comes too close to the edge of
+	// its box, at a place of its own choosing; a little slack keeps ours.
+	Larry_wrapText(in, out, size, max_width - SCALE1(4), Larry_measure, ttf);
 }
 
 // Draws a title, a block of text, an optional progress bar (percent < 0 for
@@ -2457,6 +2430,77 @@ static void Larry_draw(const char* title, const char* body, int percent, const c
 	}
 
 	if (hints) GFX_blitButtonGroup(hints, 0, screen, 1);
+	GFX_flip(screen);
+}
+
+// The approval step of linking: a QR code of the pairing address for a phone
+// to scan, with the code and address beside it for typing in by hand. Side by
+// side, because stacked on a 4:3 screen the code would be too small to scan.
+static void Larry_drawPairing(const char* title, const char* url) {
+	GFX_clearLayers(LAYER_ALL);
+	GFX_clear(screen);
+
+	int margin = SCALE1(PADDING * 2);
+	int gap = SCALE1(PADDING);
+	int width = screen->w - margin * 2;
+
+	// left: the code, as large as the screen's height allows, up to half its
+	// width, centred top to bottom
+	int qr_room = screen->h - gap * 2;
+	if (qr_room > width / 2) qr_room = width / 2;
+	int drawn = LarryQR_size(url, qr_room);
+	if (drawn) LarryQR_draw(screen, url, margin + qr_room / 2, (screen->h - drawn) / 2, qr_room);
+
+	// right: title, instruction, code and address, as one block centred in
+	// the space above the button hint at the bottom right
+	int text_x = drawn ? margin + qr_room + margin : margin;
+	int text_w = screen->w - margin - text_x;
+	int hint_h = SCALE1(PILL_SIZE + PADDING);
+	int text_top = gap;
+	int text_h = screen->h - text_top - hint_h - gap;
+
+	char code[64];
+	Larry_pairCode(url, code, sizeof(code));
+	char code_line[96];
+	snprintf(code_line, sizeof(code_line), "Code %s", code);
+
+	char title_wrapped[256], instruction[512], address[1024];
+	Larry_wrap(font.large, title, title_wrapped, sizeof(title_wrapped), text_w);
+	Larry_wrap(font.small, drawn ? "Scan with your phone, then approve the device." : "Open this address on your phone, then approve the device.",
+		instruction, sizeof(instruction), text_w);
+	Larry_wrap(font.small, url, address, sizeof(address), text_w);
+
+	int large_h = TTF_FontHeight(font.large);
+	int small_h = TTF_FontHeight(font.small);
+	int title_lines = 1, instruction_lines = 1, address_lines = 1;
+	for (char* c = title_wrapped; *c; c++) if (*c == '\n') title_lines++;
+	for (char* c = instruction; *c; c++) if (*c == '\n') instruction_lines++;
+	for (char* c = address; *c; c++) if (*c == '\n') address_lines++;
+
+	int title_h = large_h * title_lines;
+	int instruction_h = small_h * instruction_lines;
+	int code_h = code[0] ? large_h : 0;
+	int address_h = small_h * address_lines;
+	int block_h = title_h + gap + instruction_h + gap * 2 + code_h + address_h;
+	if (block_h > text_h && drawn) {
+		// An address this long would run under the button hint; the code
+		// to scan, and the code beside it, are what matter.
+		block_h -= address_h;
+		address_h = 0;
+	}
+
+	int y = text_top + (text_h > block_h ? (text_h - block_h) / 2 : 0);
+	GFX_blitMessage(font.large, title_wrapped, screen, &(SDL_Rect){ text_x, y, text_w, title_h });
+	y += title_h + gap;
+	GFX_blitMessage(font.small, instruction, screen, &(SDL_Rect){ text_x, y, text_w, instruction_h });
+	y += instruction_h + gap * 2;
+	if (code[0]) {
+		GFX_blitMessage(font.large, code_line, screen, &(SDL_Rect){ text_x, y, text_w, code_h });
+		y += code_h;
+	}
+	if (address_h) GFX_blitMessage(font.small, address, screen, &(SDL_Rect){ text_x, y, text_w, address_h });
+
+	GFX_blitButtonGroup((char*[]){ "B", "CANCEL", NULL }, 0, screen, 1);
 	GFX_flip(screen);
 }
 
@@ -2542,7 +2586,9 @@ static int Larry_run(const char* title, const char* const* args, LarryJob* resul
 				snprintf(body, sizeof(body), "Stopping...");
 			}
 			else if (!strcmp(now.stage, "approve") && now.pair_url[0]) {
-				snprintf(body, sizeof(body), "On your phone or computer, open this address and approve the device:\n\n%s", now.pair_url);
+				Larry_drawPairing(title, now.pair_url);
+				memcpy(&shown, &now, sizeof(LarryJob));
+				continue;
 			}
 			else {
 				const char* detail = now.detail;

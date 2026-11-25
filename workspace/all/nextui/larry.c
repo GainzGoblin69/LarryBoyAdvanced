@@ -57,6 +57,98 @@ static void copyText(char* dst, size_t size, const char* src) {
 }
 
 ///////////////////////////////////////
+// text
+
+static int isBreakAfter(char c) {
+	return c == '/' || c == '?' || c == '&' || c == '=' || c == '-';
+}
+
+void Larry_wrapText(const char* in, char* out, size_t size, int max_width, LarryMeasure measure, void* context) {
+	if (!size) return;
+	out[0] = '\0';
+
+	// positions in out
+	size_t o = 0;
+	size_t line_start = 0;
+	size_t after_space = 0; // just past the line's last space that fits; 0 when none
+	size_t after_soft = 0;  // just past its last break-after character that fits
+
+	for (size_t i = 0; in[i] && o + 2 < size; i++) {
+		char c = in[i];
+		out[o++] = c;
+		out[o] = '\0';
+
+		if (c == '\n') {
+			line_start = o;
+			after_space = after_soft = 0;
+			continue;
+		}
+
+		// measure only at the end of a character, never inside UTF-8
+		if (((unsigned char)in[i + 1] & 0xC0) == 0x80) continue;
+
+		// Break points are recorded only once the text up to them is known
+		// to fit, so the character that overflows is never taken for one.
+		if (measure(out + line_start, context) <= max_width) {
+			if (c == ' ') after_space = o;
+			else if (isBreakAfter(c)) after_soft = o;
+			continue;
+		}
+
+		if (c == ' ') {
+			// the space that overflowed becomes the break
+			out[o - 1] = '\n';
+			line_start = o;
+			after_space = after_soft = 0;
+			continue;
+		}
+
+		if (after_space > line_start) {
+			out[after_space - 1] = '\n';
+			line_start = after_space;
+			after_space = 0;
+			if (after_soft <= line_start) after_soft = 0;
+		}
+		else {
+			// No space: break inside the word, after a break-after character
+			// if one fits, else before the character that overflowed.
+			size_t at;
+			if (after_soft > line_start) {
+				at = after_soft;
+			}
+			else {
+				at = o - 1;
+				while (at > line_start && ((unsigned char)out[at] & 0xC0) == 0x80) at--;
+			}
+			if (at <= line_start) continue; // one character wider than the line
+			if (o + 1 >= size) break;
+
+			memmove(out + at + 1, out + at, o - at + 1); // the terminator too
+			out[at] = '\n';
+			o++;
+			line_start = at + 1;
+			after_space = after_soft = 0;
+		}
+
+		// the character that overflowed now ends a shorter line
+		if (isBreakAfter(c) && o > line_start) after_soft = o;
+	}
+}
+
+void Larry_pairCode(const char* url, char* out, size_t size) {
+	if (!size) return;
+	out[0] = '\0';
+	const char* key = "user_code=";
+	const char* at = url ? strstr(url, key) : NULL;
+	if (!at) return;
+	at += strlen(key);
+	size_t len = strcspn(at, "&#");
+	if (len >= size) len = size - 1;
+	memcpy(out, at, len);
+	out[len] = '\0';
+}
+
+///////////////////////////////////////
 // state on the card
 
 int Larry_installed(void) {
