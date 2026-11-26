@@ -56,7 +56,7 @@ static void describeFailure(LarryJob* result, const char* doing) {
 			break;
 		default:
 			if (strstr(result->error, "not on this device"))
-				snprintf(romm.message, sizeof(romm.message), "This game is not in your RomM library, so it has no saves there.");
+				snprintf(romm.message, sizeof(romm.message), "Could not match this game's file to RomM. Delete the game, download it again from the library, then try again.");
 			else if (result->error[0])
 				snprintf(romm.message, sizeof(romm.message), "Could not %s: %s", doing, result->error);
 			else
@@ -265,7 +265,6 @@ static void blitText(SDL_Surface* screen, TTF_Font* ttf, const char* text, SDL_C
 
 static void drawList(SDL_Surface* screen, SDL_Rect panel) {
 	SDL_Color dim = { 160, 160, 160, 255 };
-	SDL_Color accent = uintToColour(THEME_COLOR5_255);
 	int pad = SCALE1(PADDING);
 	int x = panel.x + pad;
 	int w = panel.w - pad * 2;
@@ -279,7 +278,9 @@ static void drawList(SDL_Surface* screen, SDL_Rect panel) {
 
 	// the selected save's details take the bottom
 	int detail_h = TTF_FontHeight(font.tiny) * 2 + pad;
-	int row_h = TTF_FontHeight(font.small) + SCALE1(4);
+	// rows are the height of the menu's option rows, so the selection is the
+	// same pill the menu uses
+	int row_h = SCALE1(BUTTON_SIZE);
 	int rows = (panel.y + panel.h - detail_h - y) / row_h;
 	if (rows < 1) rows = 1;
 
@@ -291,22 +292,20 @@ static void drawList(SDL_Surface* screen, SDL_Rect panel) {
 		LarrySave* save = &romm.saves[i];
 		int selected = i == romm.selected;
 		if (selected) {
-			SDL_FillRect(screen, &(SDL_Rect){ panel.x + pad / 2, y, panel.w - pad, row_h },
-				SDL_MapRGB(screen->format, accent.r, accent.g, accent.b));
+			GFX_blitPillDark(ASSET_BUTTON, screen, &(SDL_Rect){ panel.x + pad / 2, y, panel.w - pad, row_h });
 		}
-		SDL_Color color = selected ? (SDL_Color){ 0, 0, 0, 255 } : COLOR_WHITE;
-
-		char size[32], right[96];
-		formatSize(save->bytes, size, sizeof(size));
-		snprintf(right, sizeof(right), "%s  %s", save->slot, size);
-		int right_w = 0;
-		TTF_SizeUTF8(font.tiny, right, &right_w, NULL);
+		SDL_Color color = selected ? uintToColour(THEME_COLOR5_255) : COLOR_WHITE;
 		int text_y = y + (row_h - TTF_FontHeight(font.small)) / 2;
+
+		char size[32];
+		formatSize(save->bytes, size, sizeof(size));
+		int size_w = 0;
+		TTF_SizeUTF8(font.tiny, size, &size_w, NULL);
 
 		char left[64];
 		snprintf(left, sizeof(left), "%s%s", save->on_device ? "* " : "", save->age);
-		blitText(screen, font.small, left, color, x, text_y, w - right_w - pad, 0);
-		blitText(screen, font.tiny, right, selected ? color : dim, x + w - right_w, text_y + (TTF_FontHeight(font.small) - TTF_FontHeight(font.tiny)) / 2, right_w, 0);
+		blitText(screen, font.small, left, color, x, text_y, w - size_w - pad, 0);
+		blitText(screen, font.tiny, size, selected ? color : dim, x + w - size_w, text_y + (TTF_FontHeight(font.small) - TTF_FontHeight(font.tiny)) / 2, size_w, 0);
 		y += row_h;
 	}
 
@@ -319,11 +318,10 @@ static void drawList(SDL_Surface* screen, SDL_Rect panel) {
 	else snprintf(line, sizeof(line), "%s", save->file);
 	blitText(screen, font.tiny, line, dim, x, dy, w, 0);
 	dy += TTF_FontHeight(font.tiny);
-	snprintf(line, sizeof(line), "%s%s%s",
-		save->on_device ? "* On this device" : "",
-		save->on_device && save->newest ? "  " : "",
-		save->newest ? "Newest in its slot" : "");
-	if (!line[0]) snprintf(line, sizeof(line), "Older version");
+	snprintf(line, sizeof(line), "Slot: %s%s%s",
+		save->slot,
+		save->newest ? ", newest" : ", older",
+		save->on_device ? "  * On this device" : "");
 	blitText(screen, font.tiny, line, dim, x, dy, w, 0);
 }
 
@@ -348,7 +346,7 @@ void RommSaves_draw(SDL_Surface* screen, SDL_Rect panel) {
 			char text[LARRY_TEXT * 2];
 			LarrySave* save = &romm.saves[romm.selected];
 			snprintf(text, sizeof(text),
-				"Load the save from %s?\n\nThe game restarts with it. Its save now is backed up first, on this card.",
+				"Load the save from %s?\n\nThe game restarts with it. Your current save is backed up on this card first.",
 				save->age);
 			drawMessage(screen, text, panel);
 			break;
