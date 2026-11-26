@@ -629,6 +629,14 @@ int LEDS_getProfileOverride();
 // number of lights on this device, cached and clamped to [0, MAX_LIGHTS]
 int LEDS_getCount(void);
 
+// Larry Boy Advanced: the lights keep a game's colors after it ends.
+// LEDS_rememberAmbient keeps the colors ambient mode last showed, on the
+// card (or forgets them when on is 0: ambient mode was off).
+// LEDS_restoreAmbient shows them again, as the ambient override, so menus
+// keep the last game's colors. Returns 1 when there were colors to show.
+void LEDS_rememberAmbient(int on);
+int LEDS_restoreAmbient(void);
+
 // changes the active led profile, calls LEDS_updateLeds() implicitly if needed
 void LEDS_setProfile(int profile); // enum LightProfile
 // reapplies the current led config. This should only be necessary

@@ -439,6 +439,8 @@ SDL_Surface *GFX_init(int mode)
 
 	PLAT_initLid();
 	LEDS_initLeds();
+	// Larry Boy Advanced: the menus keep the last game's colors
+	if (mode == MODE_MAIN) LEDS_restoreAmbient();
 
 	RGB_WHITE = SDL_MapRGB(gfx.screen->format, TRIAD_WHITE);
 	RGB_BLACK = SDL_MapRGB(gfx.screen->format, TRIAD_BLACK);
@@ -4738,6 +4740,50 @@ void LEDS_initLeds()
 
 	// once is enough to get us started, will be called by the main loop afterwards
 	LEDS_applyRules();
+}
+
+#define LEDS_LAST_PATH SHARED_USERDATA_PATH "/.leds-last"
+
+void LEDS_rememberAmbient(int on)
+{
+	if (!on) {
+		unlink(LEDS_LAST_PATH);
+		return;
+	}
+	char partial[256];
+	snprintf(partial, sizeof(partial), "%s.part", LEDS_LAST_PATH);
+	FILE* file = fopen(partial, "w");
+	if (!file) return;
+	int count = LEDS_getCount();
+	for (int i = 0; i < count; i++)
+		fprintf(file, "%d %06X\n", lightsAmbient[i].effect, (unsigned)(lightsAmbient[i].color1 & 0xFFFFFF));
+	fclose(file);
+	rename(partial, LEDS_LAST_PATH);
+}
+
+int LEDS_restoreAmbient(void)
+{
+	if (lights_initialized == 0) return 0;
+	FILE* file = fopen(LEDS_LAST_PATH, "r");
+	if (!file) return 0;
+	int count = LEDS_getCount();
+	int shown = 0;
+	char line[64];
+	for (int i = 0; i < count && fgets(line, sizeof(line), file); i++) {
+		int effect = 0;
+		unsigned color = 0;
+		// only lights ambient mode set (static color) were the game's; the
+		// rest keep their usual settings
+		if (sscanf(line, "%d %x", &effect, &color) == 2 && effect == 4) {
+			lightsAmbient[i].effect = 4;
+			lightsAmbient[i].color1 = color & 0xFFFFFF;
+			shown = 1;
+		}
+	}
+	fclose(file);
+	if (shown && LEDS_getProfileOverride() != LIGHT_PROFILE_AMBIENT)
+		LEDS_pushProfileOverride(LIGHT_PROFILE_AMBIENT);
+	return shown;
 }
 
 bool LEDS_pushProfileOverride(int profile)

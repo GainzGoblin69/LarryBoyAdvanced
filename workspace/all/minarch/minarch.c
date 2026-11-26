@@ -35,7 +35,7 @@ enum retro_pixel_format fmt = RETRO_PIXEL_FORMAT_XRGB8888;
 // default frontend options
 int screen_scaling = SCALE_ASPECT;
 int resampling_quality = 2;
-int ambient_mode = 0;
+int ambient_mode = 1; // Larry Boy Advanced: on unless a config turns it off
 int screen_sharpness = SHARPNESS_SOFT;
 int screen_effect = EFFECT_NONE;
 int cfg_screenx = 64;
@@ -176,6 +176,7 @@ int main(int argc , char* argv[]) {
 	// LOG_info("DEVICE_SIZE: %ix%i (%i)\n", DEVICE_WIDTH,DEVICE_HEIGHT,DEVICE_PITCH);
 	
 	LEDS_initLeds();
+	LEDS_restoreAmbient(); // the last colors until the game draws its own
 	VIB_init();
 	PWR_init();
 	if (!HAS_POWER_BUTTON)
@@ -210,6 +211,9 @@ int main(int argc , char* argv[]) {
 	Input_init(NULL);
 	Config_readOptions(); // but others load and report options later (eg. nes)
 	Config_readControls(); // restore controls (after the core has reported its defaults)
+	// Larry Boy Advanced: options are only applied when a config names them,
+	// so ambient mode, on by default, has to be applied here when none does
+	Config_syncFrontend(config.frontend.options[FE_OPT_AMBIENT].key, config.frontend.options[FE_OPT_AMBIENT].value);
 
 	// Mute audio during startup to avoid pops (InitSettings would be logical, but too late)
 	SND_overrideMute(1);
@@ -359,6 +363,8 @@ int main(int argc , char* argv[]) {
 
 finish:
     Perf_setCPUMonitorEnabled(0);
+	// Larry Boy Advanced: the menus keep this game's last colors
+	if (game.is_open) LEDS_rememberAmbient(ambient_mode > 0);
 
 	// Unload game and shutdown RetroAchievements before Notification_quit —
 	// RA background threads (sync, badge downloads) may call notification
