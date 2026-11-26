@@ -52,3 +52,34 @@ if [ -d $BRICK_PATH ]; then
 	fi
 fi
 # --------------------------------------
+
+# --------------------------------------
+# Larry Boy Advanced: its boot logo, put in place once. The logo lives in
+# the device's own boot partition, not on the card, so this is done by the
+# install rather than shipped. The logo that was there is kept on the card
+# first. Choosing another in Tools > Bootlogo afterwards sticks: this only
+# runs again if the logo itself changes (LOGO_VERSION).
+LOGO_VERSION=1
+LARRY_HOME=${SDCARD_PATH}/.userdata/shared/larry
+LOGO_STAMP=${LARRY_HOME}/bootlogo-applied
+LOGO_PATH="${SDCARD_PATH}/Tools/tg5040/Bootlogo.pak/brick/Larry Boy Advanced.bmp"
+TRIMUI_MODEL=`strings /usr/trimui/bin/MainUI | grep ^Trimui`
+if { [ "$TRIMUI_MODEL" = "Trimui Brick" ] || [ "$TRIMUI_MODEL" = "Trimui Brick Pro" ]; } \
+	&& [ -f "$LOGO_PATH" ] && [ "$(cat "$LOGO_STAMP" 2>/dev/null)" != "$LOGO_VERSION" ]; then
+	echo "TEXT:Setting the boot logo" > /tmp/show2.fifo
+	BOOT_PATH=/mnt/boot
+	mkdir -p "$BOOT_PATH" "$LARRY_HOME"
+	if mount -t vfat /dev/mmcblk0p1 "$BOOT_PATH"; then
+		if [ -f "$BOOT_PATH/bootlogo.bmp" ] && [ ! -f "$LARRY_HOME/bootlogo-before.bmp" ]; then
+			cp "$BOOT_PATH/bootlogo.bmp" "$LARRY_HOME/bootlogo-before.bmp"
+		fi
+		# written beside it, then renamed, so a cut-off copy never becomes the logo
+		if cp "$LOGO_PATH" "$BOOT_PATH/bootlogo.bmp.new" && sync \
+			&& mv "$BOOT_PATH/bootlogo.bmp.new" "$BOOT_PATH/bootlogo.bmp" && sync; then
+			echo "$LOGO_VERSION" > "$LOGO_STAMP"
+		else
+			rm -f "$BOOT_PATH/bootlogo.bmp.new"
+		fi
+		umount "$BOOT_PATH"
+	fi
+fi
