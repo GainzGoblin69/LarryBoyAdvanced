@@ -38,6 +38,9 @@
 // Stands in for a path in the root list: opening it refreshes the library.
 #define LARRY_SYNC_PATH SDCARD_PATH "/.larry-sync"
 #define LARRY_SYNC_NAME "Sync RomM Library"
+// the main-menu item that updates the firmware from its GitHub releases
+#define LARRY_UPDATE_PATH SDCARD_PATH "/.larry-update"
+#define LARRY_UPDATE_NAME "Check for Updates"
 
 // Exit codes larry-sync uses, so a caller can branch without reading text.
 #define LARRY_EXIT_OK 0
@@ -162,6 +165,8 @@ typedef struct LarrySave {
 	char devices[96];  // devices that hold it
 	char emulator[32];
 	char file[160];
+	int has_shot;          // RomM has a picture of it
+	char shot[LARRY_PATH]; // where that picture is on the card, once fetched
 } LarrySave;
 
 // A running larry-sync command and what it has reported so far. The fields
@@ -190,9 +195,17 @@ typedef struct LarryJob {
 	// list-saves: the saves listed, newest first
 	LarrySave saves[LARRY_SAVES_MAX];
 	int save_count;
+	int saves_listed; // the list is whole; pictures may still be coming
 	// choose-save: where the chosen save went
 	char save_path[LARRY_PATH];
 	int promoted;
+	// update check / download
+	char update_current[96];
+	char update_latest[96];
+	char update_date[32];
+	long long update_size;
+	int update_available;
+	char update_ready[LARRY_PATH];
 	int finished;
 	int exit_code;
 	int cancelled;

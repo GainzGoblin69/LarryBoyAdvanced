@@ -1,7 +1,7 @@
 // Larry Boy Advanced: "RomM Saves" in the in-game menu.
 //
-// Lists the game's saves on the RomM server in the panel where Save and Load
-// show their slots, and puts the one picked in place of the game's own, which
+// Shows the game's saves on the RomM server as cards, one at a time with its
+// picture, in the panel where Save and Load show their slots, and puts the one picked in place of the game's own, which
 // larry-sync backs up first. Everything that talks to the server runs in the
 // background, so the menu never stops answering.
 
@@ -16,8 +16,12 @@ void RommSaves_reset(void);
 void RommSaves_open(const char* rom_path);
 // Call every frame. Returns 1 when something changed that needs drawing.
 int RommSaves_poll(void);
-// Left and right move through the list.
+// Left and right move from save to save.
 void RommSaves_move(int delta);
+// Keeps a picture of the game as it is left, which goes up to RomM with the
+// save written on the way out: frame is the game's last frame, tag the
+// emulator's tag (its folder in Saves) and name the game file's name.
+void RommSaves_keepShot(SDL_Surface* frame, const char* tag, const char* name);
 // A: asks to confirm, then, confirmed, starts loading the save picked.
 void RommSaves_accept(void);
 // B: returns 1 when it was used (to back out of the confirmation), 0 when the

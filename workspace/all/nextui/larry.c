@@ -852,8 +852,9 @@ void Larry_freeGames(LarryGame* games, int count) {
 static void handleLine(LarryJob* job, char* line) {
 	if (strncmp(line, "SAVE\t", 5) == 0) {
 		// SAVE id slot updated age bytes newest on_device devices emulator file
-		char* f[11] = { 0 };
-		if (splitTabs(line, f, 11) < 11) return;
+		// has_shot (the last is newer; older builds stop at file)
+		char* f[12] = { 0 };
+		if (splitTabs(line, f, 12) < 11) return;
 		pthread_mutex_lock(&job->lock);
 		if (job->save_count < LARRY_SAVES_MAX) {
 			LarrySave* save = &job->saves[job->save_count++];
@@ -867,6 +868,23 @@ static void handleLine(LarryJob* job, char* line) {
 			copyText(save->devices, sizeof(save->devices), f[8]);
 			copyText(save->emulator, sizeof(save->emulator), f[9]);
 			copyText(save->file, sizeof(save->file), f[10]);
+			save->has_shot = f[11] && f[11][0] == '1';
+			save->shot[0] = '\0';
+		}
+		pthread_mutex_unlock(&job->lock);
+		return;
+	}
+	if (strncmp(line, "SHOT\t", 5) == 0) {
+		// SHOT save_id path
+		char* f[3] = { 0 };
+		if (splitTabs(line, f, 3) < 3) return;
+		int id = atoi(f[1]);
+		pthread_mutex_lock(&job->lock);
+		for (int i = 0; i < job->save_count; i++) {
+			if (job->saves[i].id == id) {
+				copyText(job->saves[i].shot, sizeof(job->saves[i].shot), f[2]);
+				break;
+			}
 		}
 		pthread_mutex_unlock(&job->lock);
 		return;
@@ -905,6 +923,13 @@ static void handleLine(LarryJob* job, char* line) {
 		else if (strcmp(fields[1], "saves_problem") == 0) copyText(job->saves_problem, sizeof(job->saves_problem), fields[2]);
 		else if (strcmp(fields[1], "save_path") == 0) copyText(job->save_path, sizeof(job->save_path), fields[2]);
 		else if (strcmp(fields[1], "promoted") == 0) job->promoted = fields[2][0] == '1';
+		else if (strcmp(fields[1], "count") == 0) job->saves_listed = 1;
+		else if (strcmp(fields[1], "current") == 0) copyText(job->update_current, sizeof(job->update_current), fields[2]);
+		else if (strcmp(fields[1], "latest") == 0) copyText(job->update_latest, sizeof(job->update_latest), fields[2]);
+		else if (strcmp(fields[1], "latest_date") == 0) copyText(job->update_date, sizeof(job->update_date), fields[2]);
+		else if (strcmp(fields[1], "size") == 0) job->update_size = atoll(fields[2]);
+		else if (strcmp(fields[1], "available") == 0) job->update_available = fields[2][0] == '1';
+		else if (strcmp(fields[1], "ready") == 0) copyText(job->update_ready, sizeof(job->update_ready), fields[2]);
 	}
 	pthread_mutex_unlock(&job->lock);
 }

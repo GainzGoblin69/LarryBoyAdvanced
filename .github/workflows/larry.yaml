@@ -178,6 +178,7 @@ jobs:
           unzip -l "$ZIP" | grep -E 'MinUI.zip|romm-server.txt|Roms/' | head -20
           mkdir -p /tmp/payload && unzip -o -q "$ZIP" MinUI.zip -d /tmp/payload
           unzip -l /tmp/payload/MinUI.zip | grep -E 'larry|nextui.elf'
+          unzip -p /tmp/payload/MinUI.zip .system/larry-repo.txt
           echo "RELEASE_NAME=$(basename "$ZIP" -all.zip)" >> "$GITHUB_ENV"
 
       - name: Upload firmware
@@ -219,9 +220,13 @@ jobs:
 
           Built from \`$BRANCH\` at ${GITHUB_SHA::7}.
 
-          **To install:** format a microSD card as FAT32, unzip this onto it, add your RomM server's address to \`romm-server.txt\`, then put the card in and power on.
+          **To install:** format a microSD card as FAT32, unzip the \`-all.zip\` onto it, add your RomM server's address to \`romm-server.txt\`, then put the card in and power on.
+
+          **To update:** choose Check for Updates on the Hammer, or copy \`MinUI.zip\` to the top of the card.
           NOTES
-          gh release create "$TAG" "$ZIP" \
+          # MinUI.zip on its own is what Check for Updates downloads
+          unzip -o -q "$ZIP" MinUI.zip -d release/payload
+          gh release create "$TAG" "$ZIP" release/payload/MinUI.zip \
             --target "$GITHUB_SHA" \
             --title "Larry Boy Advanced ${NAME#LarryBoyAdvanced-} (${GITHUB_SHA::7})" \
             --notes-file notes.md \

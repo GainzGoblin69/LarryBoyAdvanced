@@ -17,7 +17,9 @@ endif
 
 ###########################################################
 
-BUILD_HASH:=$(shell git rev-parse --short HEAD)
+BUILD_HASH:=$(shell git rev-parse --short=7 HEAD)
+# the GitHub repository whose releases the firmware updates itself from
+LARRY_REPO ?= $(or $(GITHUB_REPOSITORY),GainzGoblin69/LarryBoyAdvanced)
 BUILD_BRANCH:=$(shell (git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD) | sed 's/\//-/g')
 RELEASE_TIME:=$(shell TZ=GMT date +%Y%m%d)
 ifeq ($(BUILD_BRANCH),main)
@@ -255,6 +257,8 @@ package: tidy
 	rm -rf ./workspace/readmes
 	
 	cd ./build/SYSTEM && echo "$(RELEASE_NAME)\n$(BUILD_HASH)" > version.txt
+	# Larry Boy Advanced: where Check for Updates looks for new releases
+	cd ./build/SYSTEM && echo "$(LARRY_REPO)" > larry-repo.txt
 	./commits.sh > ./build/SYSTEM/commits.txt
 	cd ./build && find . -type f -name '.DS_Store' -delete
 	mkdir -p ./build/PAYLOAD

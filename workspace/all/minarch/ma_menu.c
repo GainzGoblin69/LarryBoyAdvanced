@@ -1975,6 +1975,9 @@ void Menu_loop(void) {
 				}
 				break;
 				case ITEM_QUIT:
+					// Larry Boy Advanced: a picture of where the game was left,
+					// sent to RomM with the save
+					RommSaves_keepShot(menu.bitmap, core.tag, game.alt_name);
 					status = STATUS_QUIT;
 					show_menu = 0;
 					quit = 1; // TODO: tmp?

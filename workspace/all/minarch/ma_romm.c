@@ -4,6 +4,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <SDL2/SDL_image.h>
 
 #include "defines.h"
 #include "api.h"
@@ -30,17 +32,33 @@ static struct {
 	char message[LARRY_TEXT * 2];
 	char loaded_message[LARRY_TEXT];
 	int taken;
+	int listing; // the job running is list-saves, still fetching pictures
 } romm;
+
+// The selected save's picture, fitted to the card, kept between frames.
+static struct {
+	SDL_Surface* image;
+	char path[LARRY_PATH];
+	int w, h; // the card it was fitted to
+	int failed;
+} picture;
+
+static void dropPicture(void) {
+	if (picture.image) SDL_FreeSurface(picture.image);
+	memset(&picture, 0, sizeof(picture));
+}
 
 static void stopJob(void) {
 	if (!romm.job) return;
 	LarryJob_cancel(romm.job);
 	LarryJob_free(romm.job);
 	romm.job = NULL;
+	romm.listing = 0;
 }
 
 void RommSaves_reset(void) {
 	stopJob();
+	dropPicture();
 	memset(&romm, 0, sizeof(romm));
 	romm.state = ROMM_IDLE;
 }
@@ -82,6 +100,7 @@ static void startList(void) {
 		return;
 	}
 	romm.state = ROMM_LOADING;
+	romm.listing = 1;
 }
 
 void RommSaves_open(const char* rom_path) {
@@ -90,35 +109,55 @@ void RommSaves_open(const char* rom_path) {
 	startList();
 }
 
+// Takes the list from the job, starting on the save the device has, so left
+// and right are relative to what is being played.
+static void takeList(LarryJob* now) {
+	romm.count = now->save_count;
+	memcpy(romm.saves, now->saves, sizeof(LarrySave) * romm.count);
+	romm.state = romm.count ? ROMM_LIST : ROMM_EMPTY;
+	romm.selected = 0;
+	for (int i = 0; i < romm.count; i++) {
+		if (romm.saves[i].on_device) {
+			romm.selected = i;
+			break;
+		}
+	}
+}
+
 int RommSaves_poll(void) {
 	if (!romm.job) return 0;
 
 	// LarryJob is large; one copy, kept off the stack.
 	static LarryJob now;
 	LarryJob_snapshot(romm.job, &now);
-	if (!now.finished) return 0;
+	int changed = 0;
 
-	LarryJob_free(romm.job);
-	romm.job = NULL;
-
-	if (romm.state == ROMM_LOADING) {
-		if (now.exit_code != LARRY_EXIT_OK) {
-			describeFailure(&now, "list the saves");
-			return 1;
-		}
-		romm.count = now.save_count;
-		memcpy(romm.saves, now.saves, sizeof(LarrySave) * romm.count);
-		romm.state = romm.count ? ROMM_LIST : ROMM_EMPTY;
-		// start on the save the device has, so left and right are relative
-		// to what is being played
-		for (int i = 0; i < romm.count; i++) {
-			if (romm.saves[i].on_device) {
-				romm.selected = i;
-				break;
+	// The list comes first and can be chosen from while pictures follow.
+	if (romm.state == ROMM_LOADING && now.saves_listed) {
+		takeList(&now);
+		changed = 1;
+	}
+	if (romm.listing && romm.state != ROMM_LOADING) {
+		for (int i = 0; i < romm.count && i < now.save_count; i++) {
+			if (now.saves[i].id == romm.saves[i].id && strcmp(now.saves[i].shot, romm.saves[i].shot)) {
+				memcpy(romm.saves[i].shot, now.saves[i].shot, sizeof(romm.saves[i].shot));
+				changed = 1;
 			}
 		}
+	}
+	if (!now.finished) return changed;
+
+	int was_listing = romm.listing;
+	LarryJob_free(romm.job);
+	romm.job = NULL;
+	romm.listing = 0;
+
+	if (romm.state == ROMM_LOADING) {
+		if (now.exit_code != LARRY_EXIT_OK) describeFailure(&now, "list the saves");
+		else takeList(&now);
 		return 1;
 	}
+	if (was_listing) return 1; // pictures done; a picture that failed just stays missing
 
 	if (romm.state == ROMM_WORKING) {
 		if (now.exit_code != LARRY_EXIT_OK) {
@@ -130,12 +169,45 @@ int RommSaves_poll(void) {
 		romm.taken = 0;
 		return 1;
 	}
-	return 0;
+	return changed;
 }
 
 void RommSaves_move(int delta) {
 	if (romm.state != ROMM_LIST || romm.count == 0) return;
-	romm.selected = (romm.selected + delta + romm.count) % romm.count;
+	// like the save slots: stops at the ends rather than wrapping
+	int next = romm.selected + delta;
+	if (next < 0 || next >= romm.count) return;
+	romm.selected = next;
+}
+
+void RommSaves_keepShot(SDL_Surface* frame, const char* tag, const char* name) {
+	if (!frame || !tag || !tag[0] || !name || !name[0] || !Larry_installed()) return;
+
+	char dir[LARRY_PATH];
+	snprintf(dir, sizeof(dir), SHARED_USERDATA_PATH "/larry");
+	mkdir(dir, 0755);
+	snprintf(dir, sizeof(dir), SHARED_USERDATA_PATH "/larry/shots");
+	mkdir(dir, 0755);
+	snprintf(dir, sizeof(dir), SHARED_USERDATA_PATH "/larry/shots/%s", tag);
+	mkdir(dir, 0755);
+
+	// half size: plenty for a card, and quick to send
+	int w = frame->w / 2, h = frame->h / 2;
+	if (w < 1 || h < 1) return;
+	SDL_Surface* small = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
+	if (!small) return;
+	SDL_BlendMode mode;
+	SDL_GetSurfaceBlendMode(frame, &mode);
+	SDL_SetSurfaceBlendMode(frame, SDL_BLENDMODE_NONE);
+	SDL_BlitScaled(frame, NULL, small, NULL);
+	SDL_SetSurfaceBlendMode(frame, mode);
+
+	char path[LARRY_PATH * 2], partial[LARRY_PATH * 2 + 8];
+	snprintf(path, sizeof(path), "%s/%s.png", dir, name);
+	snprintf(partial, sizeof(partial), "%s.part", path);
+	if (IMG_SavePNG(small, partial) == 0) rename(partial, path);
+	else remove(partial);
+	SDL_FreeSurface(small);
 }
 
 void RommSaves_accept(void) {
@@ -263,66 +335,135 @@ static void blitText(SDL_Surface* screen, TTF_Font* ttf, const char* text, SDL_C
 	SDL_FreeSurface(rendered);
 }
 
-static void drawList(SDL_Surface* screen, SDL_Rect panel) {
-	SDL_Color dim = { 160, 160, 160, 255 };
-	int pad = SCALE1(PADDING);
-	int x = panel.x + pad;
-	int w = panel.w - pad * 2;
-	int y = panel.y + pad / 2;
+// The save's picture fitted inside w by h, keeping its shape, loaded once
+// and kept while the same save stays selected. NULL when there is none.
+static SDL_Surface* pictureFor(LarrySave* save, int w, int h, SDL_PixelFormat* format) {
+	if (!save->shot[0]) return NULL;
+	if (!strcmp(picture.path, save->shot) && picture.w == w && picture.h == h)
+		return picture.failed ? NULL : picture.image;
 
-	// header
-	char header[64];
-	snprintf(header, sizeof(header), "%d save%s on RomM", romm.count, romm.count == 1 ? "" : "s");
-	blitText(screen, font.tiny, header, dim, x, y, w, 0);
-	y += TTF_FontHeight(font.tiny) + pad / 2;
+	dropPicture();
+	snprintf(picture.path, sizeof(picture.path), "%s", save->shot);
+	picture.w = w;
+	picture.h = h;
 
-	// the selected save's details take the bottom
-	int detail_h = TTF_FontHeight(font.tiny) * 2 + pad;
-	// rows are the height of the menu's option rows, so the selection is the
-	// same pill the menu uses
-	int row_h = SCALE1(BUTTON_SIZE);
-	int rows = (panel.y + panel.h - detail_h - y) / row_h;
-	if (rows < 1) rows = 1;
-
-	int first = romm.selected - rows / 2;
-	if (first > romm.count - rows) first = romm.count - rows;
-	if (first < 0) first = 0;
-
-	for (int i = first; i < romm.count && i < first + rows; i++) {
-		LarrySave* save = &romm.saves[i];
-		int selected = i == romm.selected;
-		if (selected) {
-			GFX_blitPillDark(ASSET_BUTTON, screen, &(SDL_Rect){ panel.x + pad / 2, y, panel.w - pad, row_h });
-		}
-		SDL_Color color = selected ? uintToColour(THEME_COLOR5_255) : COLOR_WHITE;
-		int text_y = y + (row_h - TTF_FontHeight(font.small)) / 2;
-
-		char size[32];
-		formatSize(save->bytes, size, sizeof(size));
-		int size_w = 0;
-		TTF_SizeUTF8(font.tiny, size, &size_w, NULL);
-
-		char left[64];
-		snprintf(left, sizeof(left), "%s%s", save->on_device ? "* " : "", save->age);
-		blitText(screen, font.small, left, color, x, text_y, w - size_w - pad, 0);
-		blitText(screen, font.tiny, size, selected ? color : dim, x + w - size_w, text_y + (TTF_FontHeight(font.small) - TTF_FontHeight(font.tiny)) / 2, size_w, 0);
-		y += row_h;
+	SDL_Surface* loaded = IMG_Load(save->shot);
+	if (!loaded || loaded->w < 1 || loaded->h < 1) {
+		if (loaded) SDL_FreeSurface(loaded);
+		picture.failed = 1;
+		return NULL;
+	}
+	SDL_Surface* converted = SDL_ConvertSurface(loaded, format, 0);
+	SDL_FreeSurface(loaded);
+	if (!converted) {
+		picture.failed = 1;
+		return NULL;
 	}
 
-	// details of the selected save
+	// fit, keeping the picture's shape: a widescreen one from a PC is
+	// letterboxed rather than squashed
+	int fit_w = w, fit_h = converted->h * w / converted->w;
+	if (fit_h > h) {
+		fit_h = h;
+		fit_w = converted->w * h / converted->h;
+	}
+	if (fit_w < 1) fit_w = 1;
+	if (fit_h < 1) fit_h = 1;
+	picture.image = SDL_CreateRGBSurfaceWithFormat(0, fit_w, fit_h, format->BitsPerPixel, format->format);
+	if (picture.image) {
+		SDL_SetSurfaceBlendMode(converted, SDL_BLENDMODE_NONE);
+		SDL_BlitScaled(converted, NULL, picture.image, NULL);
+	}
+	SDL_FreeSurface(converted);
+	if (!picture.image) picture.failed = 1;
+	return picture.image;
+}
+
+// Darkens a band of the screen so text over a picture can be read.
+static void shade(SDL_Surface* screen, SDL_Rect band) {
+	SDL_Surface* veil = SDL_CreateRGBSurfaceWithFormat(0, band.w, band.h, 32, SDL_PIXELFORMAT_ARGB8888);
+	if (!veil) return;
+	SDL_FillRect(veil, NULL, SDL_MapRGBA(veil->format, 0, 0, 0, 180));
+	SDL_SetSurfaceBlendMode(veil, SDL_BLENDMODE_BLEND);
+	SDL_BlitSurface(veil, NULL, screen, &band);
+	SDL_FreeSurface(veil);
+}
+
+// One save at a time, as a card the size of a save slot's preview: its
+// picture, when it has one, with when it is from along the bottom, and dots
+// below for where it is among the game's saves, as the slots have.
+static void drawCard(SDL_Surface* screen, SDL_Rect panel) {
+	SDL_Color dim = { 190, 190, 190, 255 };
 	LarrySave* save = &romm.saves[romm.selected];
-	int dy = panel.y + panel.h - detail_h + pad / 2;
-	char line[256];
-	if (save->devices[0]) snprintf(line, sizeof(line), "From %s", save->devices);
-	else if (save->emulator[0]) snprintf(line, sizeof(line), "From %s", save->emulator);
-	else snprintf(line, sizeof(line), "%s", save->file);
-	blitText(screen, font.tiny, line, dim, x, dy, w, 0);
-	dy += TTF_FontHeight(font.tiny);
-	snprintf(line, sizeof(line), "Slot: %s%s%s",
-		save->slot,
-		save->newest ? ", newest" : ", older",
-		save->on_device ? "  * On this device" : "");
-	blitText(screen, font.tiny, line, dim, x, dy, w, 0);
+	int pad = SCALE1(PADDING);
+	// the menu gives a panel the size of a slot preview plus the row of dots
+	SDL_Rect card = { panel.x, panel.y, panel.w, panel.h - SCALE1(10) };
+
+	// the picture, or what stands in for it
+	SDL_Surface* image = pictureFor(save, card.w, card.h, screen->format);
+	if (image) {
+		SDL_BlitSurface(image, NULL, screen, &(SDL_Rect){ card.x + (card.w - image->w) / 2, card.y + (card.h - image->h) / 2 });
+	}
+	else {
+		const char* stand_in = save->has_shot && !picture.failed && romm.listing ? "Loading Picture..." : "No Picture";
+		SDL_Rect above = { card.x, card.y, card.w, card.h - SCALE1(40) };
+		GFX_blitMessage(font.large, (char*)stand_in, screen, &above);
+	}
+
+	// when it is from, and how big, along the bottom
+	int line1 = TTF_FontHeight(font.small);
+	int line2 = TTF_FontHeight(font.tiny);
+	SDL_Rect band = { card.x, card.y + card.h - line1 - line2 - pad, card.w, line1 + line2 + pad };
+	shade(screen, band);
+
+	int x = card.x + pad;
+	int w = card.w - pad * 2;
+	int y = band.y + pad / 2;
+	char size[32];
+	formatSize(save->bytes, size, sizeof(size));
+	int size_w = 0;
+	TTF_SizeUTF8(font.tiny, size, &size_w, NULL);
+	blitText(screen, font.small, save->age, COLOR_WHITE, x, y, w - size_w - pad, 0);
+	blitText(screen, font.tiny, size, dim, x + w - size_w, y + (line1 - line2) / 2, size_w, 0);
+	y += line1;
+
+	char from[160];
+	if (save->devices[0]) snprintf(from, sizeof(from), "%s", save->devices);
+	else if (save->emulator[0]) snprintf(from, sizeof(from), "%s", save->emulator);
+	else snprintf(from, sizeof(from), "RomM");
+	char details[256];
+	snprintf(details, sizeof(details), "%s  |  %s%s", from, save->slot, save->newest ? ", newest" : "");
+	blitText(screen, font.tiny, details, dim, x, y, w, 0);
+
+	// the one the game has now, marked in the corner
+	if (save->on_device) {
+		const char* mark = "On this device";
+		int mark_w = 0;
+		TTF_SizeUTF8(font.tiny, mark, &mark_w, NULL);
+		SDL_Rect badge = { card.x, card.y, mark_w + pad * 2, line2 + pad };
+		shade(screen, badge);
+		blitText(screen, font.tiny, mark, COLOR_WHITE, badge.x + pad, badge.y + pad / 2, mark_w, 0);
+	}
+
+	// where this one is among them: dots like the slots, or "3 / 14" when
+	// there are too many to fit
+	int dots_y = card.y + card.h + SCALE1(4);
+	int step = SCALE1(15);
+	if (romm.count * step <= card.w - pad * 2) {
+		int dx = card.x + (card.w - step * romm.count) / 2;
+		for (int i = 0; i < romm.count; i++) {
+			if (i == romm.selected) GFX_blitAsset(ASSET_PAGE, NULL, screen, &(SDL_Rect){ dx + i * step, dots_y });
+			else GFX_blitAsset(ASSET_DOT, NULL, screen, &(SDL_Rect){ dx + i * step + 4, dots_y + SCALE1(2) });
+		}
+	}
+	else {
+		char where[32];
+		snprintf(where, sizeof(where), "%d / %d", romm.selected + 1, romm.count);
+		int where_w = 0;
+		TTF_SizeUTF8(font.tiny, where, &where_w, NULL);
+		int where_y = card.y + card.h + (panel.y + panel.h - card.y - card.h - line2) / 2;
+		blitText(screen, font.tiny, where, dim, card.x + (card.w - where_w) / 2, where_y, where_w, 0);
+	}
 }
 
 void RommSaves_draw(SDL_Surface* screen, SDL_Rect panel) {
@@ -340,7 +481,7 @@ void RommSaves_draw(SDL_Surface* screen, SDL_Rect panel) {
 			drawMessage(screen, romm.message, panel);
 			break;
 		case ROMM_LIST:
-			drawList(screen, panel);
+			drawCard(screen, panel);
 			break;
 		case ROMM_CONFIRM: {
 			char text[LARRY_TEXT * 2];

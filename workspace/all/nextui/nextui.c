@@ -891,6 +891,7 @@ static Array* getRoot(void) {
 	// Larry Boy Advanced: refreshing the RomM library, and the first setup
 	if (Larry_installed()) {
 		Array_push(root, Entry_newNamed(LARRY_SYNC_PATH, ENTRY_PAK, LARRY_SYNC_NAME));
+		Array_push(root, Entry_newNamed(LARRY_UPDATE_PATH, ENTRY_PAK, LARRY_UPDATE_NAME));
 	}
 
 	// Add tools if applicable
@@ -1633,10 +1634,15 @@ static void toggleQuick(Entry* self)
 // Larry Boy Advanced screens, defined further down beside the other drawing code.
 static int Larry_prepareGame(Entry* entry);
 static void Larry_syncLibrary(void);
+static void Larry_checkUpdate(void);
 
 static void Entry_open(Entry* self) {
 	if (self->type==ENTRY_PAK && exactMatch(self->path, LARRY_SYNC_PATH)) {
 		Larry_syncLibrary();
+		return;
+	}
+	if (self->type==ENTRY_PAK && exactMatch(self->path, LARRY_UPDATE_PATH)) {
+		Larry_checkUpdate();
 		return;
 	}
 	if (self->rom_id > 0) {
@@ -2535,6 +2541,8 @@ static const char* Larry_stageLabel(const char* stage) {
 	if (!strcmp(stage, "extract")) return "Unpacking";
 	if (!strcmp(stage, "bios")) return "Getting BIOS files";
 	if (!strcmp(stage, "saves")) return "Checking saves";
+	if (!strcmp(stage, "check")) return "Checking for updates";
+	if (!strcmp(stage, "update")) return "Downloading the update";
 	return "Starting";
 }
 
@@ -2732,6 +2740,71 @@ static int Larry_syncNow(void) {
 
 static void Larry_syncLibrary(void) {
 	if (Larry_syncNow() || Larry_hasCatalog()) Larry_rebuildMenu();
+}
+
+static void Larry_flash(const char* title, const char* body);
+
+// What a failed update check or download means, in words.
+static void Larry_updateFailure(int code, LarryJob* result, const char* doing, char* out, size_t size) {
+	if (code == LARRY_EXIT_UNREACHABLE) snprintf(out, size, "Could not reach GitHub to %s. Check Wi-Fi, then try again.", doing);
+	else if (result->error[0]) snprintf(out, size, "Could not %s: %s", doing, result->error);
+	else snprintf(out, size, "Could not %s (code %d).", doing, code);
+}
+
+// Check for Updates: asks GitHub for the newest release, and if it is a
+// different build, downloads its MinUI.zip to the top of the card and
+// restarts. The boot script installs it, keeping games, saves and settings.
+static void Larry_checkUpdate(void) {
+	if (!Larry_waitOnline(15, "Checking for updates needs Wi-Fi.")) {
+		Larry_tell(LARRY_UPDATE_NAME, "Wi-Fi is not connected. Connect in Tools > Settings > Network, then try again.");
+		return;
+	}
+
+	const char* check[] = { "update", "check", NULL };
+	LarryJob result;
+	int code = Larry_run(LARRY_UPDATE_NAME, check, &result);
+	if (code == LARRY_EXIT_CANCELLED) return;
+	if (code != LARRY_EXIT_OK) {
+		char why[LARRY_TEXT + 96];
+		Larry_updateFailure(code, &result, "check for updates", why, sizeof(why));
+		Larry_tell(LARRY_UPDATE_NAME, why);
+		return;
+	}
+	if (!result.update_available) {
+		Larry_tell("Up to date", "This is the newest Larry Boy Advanced.");
+		return;
+	}
+
+	char size[32];
+	Larry_formatBytes(result.update_size, size, sizeof(size));
+	char body[LARRY_TEXT * 2];
+	snprintf(body, sizeof(body),
+		"A new Larry Boy Advanced%s%s is ready to download (%s).\n\n"
+		"The Hammer restarts to install it. Your games, saves and settings stay.",
+		result.update_date[0] ? " from " : "", result.update_date, size);
+	if (!Larry_ask("Update available", body, (char*[]){ "B", "LATER", "A", "UPDATE", NULL })) return;
+
+	// installing runs at the next start and must not lose power part way
+	int charging = 0, charge = 100;
+	PLAT_getBatteryStatusFine(&charging, &charge);
+	if (!charging && charge < 20) {
+		Larry_tell("Battery low", "Plug in the Hammer, or charge it above 20%, before updating.");
+		return;
+	}
+
+	const char* download[] = { "update", "download", NULL };
+	code = Larry_run("Updating Larry Boy Advanced", download, &result);
+	if (code == LARRY_EXIT_CANCELLED) return;
+	if (code != LARRY_EXIT_OK || !result.update_ready[0]) {
+		char why[LARRY_TEXT + 96];
+		Larry_updateFailure(code, &result, "download the update", why, sizeof(why));
+		Larry_tell(LARRY_UPDATE_NAME, why);
+		return;
+	}
+
+	Larry_flash("Update downloaded", "Restarting to install it...");
+	cleanupImageLoaderPool(); // stop worker threads before SDL cleanup, as Reboot does
+	PWR_powerOff(1);
 }
 
 // Shows a short confirmation that needs no button press.
