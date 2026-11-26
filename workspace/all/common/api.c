@@ -3375,6 +3375,24 @@ void PAD_reset(void)
 	pad.just_released = BTN_NONE;
 	pad.just_repeated = BTN_NONE;
 }
+// Larry Boy Advanced: Select with the D-pad belongs to keymon (Select +
+// up/down is the volume, Select + left/right changes the song of the music
+// playing), so while Select is held the D-pad does nothing else: menus don't
+// move and games don't see it. When the volume was last changed that way,
+// for showing the volume rather than the warmth Select also changes.
+static uint32_t select_volume_at = 0;
+static void PAD_holdSelectCombos(void)
+{
+	if (!(pad.is_pressed & BTN_SELECT)) return;
+	int dpad = BTN_DPAD_UP | BTN_DPAD_DOWN | BTN_DPAD_LEFT | BTN_DPAD_RIGHT;
+	if (pad.is_pressed & (BTN_DPAD_UP | BTN_DPAD_DOWN))
+		select_volume_at = SDL_GetTicks();
+	pad.is_pressed &= ~dpad;
+	pad.just_pressed &= ~dpad;
+	pad.just_repeated &= ~dpad;
+	pad.just_released &= ~dpad;
+}
+
 FALLBACK_IMPLEMENTATION void PLAT_pollInput(void)
 {
 	// reset transient state
@@ -3812,6 +3830,8 @@ FALLBACK_IMPLEMENTATION void PLAT_pollInput(void)
 
 	if (lid.has_lid && PLAT_lidChanged(NULL))
 		pad.just_released |= BTN_SLEEP;
+
+	PAD_holdSelectCombos();
 }
 FALLBACK_IMPLEMENTATION int PLAT_shouldWake(void)
 {
@@ -4239,6 +4259,10 @@ void PWR_update(int *_dirty, int *_show_setting, PWR_callback_t before_sleep, PW
 		if (PAD_isPressed(BTN_MOD_BRIGHTNESS))
 		{
 			show_setting = 1;
+		}
+		else if (now - select_volume_at < 700)
+		{
+			show_setting = 2; // Select + up/down: the volume (Larry Boy Advanced)
 		}
 		else if (PAD_isPressed(BTN_MOD_COLORTEMP))
 		{

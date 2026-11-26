@@ -13,6 +13,9 @@
 //            /tmp/larry-music.paused appears once it has.
 //   SIGUSR2  carry on from where it paused.
 //   SIGTERM  stop for good.
+//   SIGRTMIN+1  the next song; SIGRTMIN+2 the one before (or this one from
+//            the start, a few seconds in). keymon sends these for Select +
+//            right and left.
 // Only one runs at a time; its PID is in /tmp/larry-music.pid.
 
 #include <errno.h>
@@ -54,10 +57,13 @@
 static volatile sig_atomic_t want_pause = 0;
 static volatile sig_atomic_t want_resume = 0;
 static volatile sig_atomic_t want_quit = 0;
+static volatile sig_atomic_t want_skip = 0; // +1 next, -1 previous
 
 static void onSignal(int sig) {
 	if (sig == SIGUSR1) want_pause = 1;
 	else if (sig == SIGUSR2) want_resume = 1;
+	else if (sig == SIGRTMIN + 1) want_skip = 1;
+	else if (sig == SIGRTMIN + 2) want_skip = -1;
 	else want_quit = 1;
 }
 
@@ -301,6 +307,23 @@ static void touch(const char* path) {
 	if (file) fclose(file);
 }
 
+// Songs played, for going back: the last few, newest last. larry-sync keeps
+// that many on the card. Going back puts the songs left on a stack, which
+// going forward plays before asking for new ones.
+#define HISTORY 3
+static Song played[HISTORY];
+static int played_count = 0;
+static Song ahead[HISTORY];
+static int ahead_count = 0;
+
+static void remember(Song* list, int* count, const Song* song) {
+	if (*count == HISTORY) {
+		memmove(list, list + 1, sizeof(Song) * (HISTORY - 1));
+		(*count)--;
+	}
+	list[(*count)++] = *song;
+}
+
 // Another player left running is told to stop; this one takes over.
 static void takeOver(void) {
 	FILE* file = fopen(PID_PATH, "r");
@@ -333,6 +356,8 @@ int main(int argc, char* argv[]) {
 	sigaction(SIGUSR2, &action, NULL);
 	sigaction(SIGTERM, &action, NULL);
 	sigaction(SIGINT, &action, NULL);
+	sigaction(SIGRTMIN + 1, &action, NULL);
+	sigaction(SIGRTMIN + 2, &action, NULL);
 	signal(SIGPIPE, SIG_IGN);
 
 	takeOver();
@@ -351,6 +376,9 @@ int main(int argc, char* argv[]) {
 
 	Decoder decoder = { 0 };
 	SDL_AudioStream* stream = NULL;
+	Song current = { "", "", "" };
+	long long frames_played = 0; // of the current song, decoded so far
+	Song requested = { "", "", "" }; // a song to play next, from going back or forward
 	float fade = 0.0f;           // 0 silent .. 1 full
 	int16_t decoded[4096 * 8];   // up to 4096 frames of up to 8 channels
 	int16_t converted[4096 * 4];
@@ -377,17 +405,48 @@ int main(int argc, char* argv[]) {
 			}
 		}
 		if (paused) {
+			want_skip = 0; // the speaker is the game's: no changing songs
 			SDL_Delay(50);
 			continue;
+		}
+
+		// Select + left/right
+		if (want_skip) {
+			int skip = want_skip;
+			want_skip = 0;
+			if (skip < 0 && decoder.kind != DEC_NONE && frames_played < (long long)decoder.rate * 4 && played_count > 1) {
+				// back a song: this one waits ahead
+				remember(ahead, &ahead_count, &played[--played_count]);
+				requested = played[--played_count];
+			}
+			else if (skip < 0 && current.path[0]) {
+				// a few seconds in, or nothing before it: from the start
+				requested = current;
+				played_count--;
+			}
+			// next: the song gone back past, if any, else a new one, as at a song's end
+			if (decoder.kind != DEC_NONE) decoderClose(&decoder);
+			if (stream) SDL_AudioStreamClear(stream);
+			SDL_ClearQueuedAudio(device);
+			fade = 0.6f; // a short fade in, not a jolt
 		}
 
 		// a song to play
 		if (decoder.kind == DEC_NONE) {
 			Song song;
-			if (!takeSong(&song)) {
+			// a song asked for, then the songs gone back past, then a new one
+			if (requested.path[0]) {
+				song = requested;
+				requested.path[0] = '\0';
+			}
+			else if (ahead_count > 0) {
+				song = ahead[--ahead_count];
+			}
+			else if (!takeSong(&song)) {
 				SDL_Delay(100);
 				continue;
 			}
+			if (access(song.path, R_OK) != 0) continue; // cleared from the card already
 			if (!decoderOpen(&decoder, song.path)) {
 				logLine("cannot play %s", song.path);
 				unlink(song.path);
@@ -400,6 +459,9 @@ int main(int argc, char* argv[]) {
 				continue;
 			}
 			writeNow(&song);
+			current = song;
+			frames_played = 0;
+			remember(played, &played_count, &song);
 			logLine("playing %s (%s)", song.title, song.album);
 		}
 
@@ -411,7 +473,10 @@ int main(int argc, char* argv[]) {
 				SDL_AudioStreamFlush(stream);
 				decoderClose(&decoder);
 			}
-			else SDL_AudioStreamPut(stream, decoded, frames * decoder.channels * (int)sizeof(int16_t));
+			else {
+				frames_played += frames;
+				SDL_AudioStreamPut(stream, decoded, frames * decoder.channels * (int)sizeof(int16_t));
+			}
 
 			int got;
 			while ((got = SDL_AudioStreamGet(stream, converted, sizeof(converted))) > 0) {
