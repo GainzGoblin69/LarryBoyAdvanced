@@ -443,20 +443,21 @@ void Larry_musicPause(int wait_ms) {
 void Larry_musicPlay(void) {
 	char choice[16];
 	Larry_musicChoice(choice, sizeof(choice));
+	if (!Larry_musicPlaySource(choice)) Larry_musicStop();
+}
+
+int Larry_musicPlaySource(const char* choice) {
 	int game, johnny;
 	Larry_readMusicFile(LARRY_MUSIC_FILE, &game, &johnny);
 	int wanted = (!strcmp(choice, "game") && game) || (!strcmp(choice, "johnny") && johnny);
-	if (!wanted || !exists(LARRY_MUSIC_PLAYER)) {
-		Larry_musicStop();
-		return;
-	}
+	if (!wanted || !exists(LARRY_MUSIC_PLAYER)) return 0;
 
 	char running[16];
 	runningSource(running, sizeof(running));
 	pid_t pid = musicPid();
 	if (pid && !strcmp(running, choice)) {
 		kill(pid, SIGUSR2); // carry on from the pause
-		return;
+		return 1;
 	}
 	Larry_musicStop();
 
@@ -464,7 +465,7 @@ void Larry_musicPlay(void) {
 	// the launcher between games, and the launcher's waits for larry-sync
 	// never see it end.
 	pid = fork();
-	if (pid < 0) return;
+	if (pid < 0) return 0;
 	if (pid == 0) {
 		setsid();
 		if (fork() != 0) _exit(0);
@@ -493,6 +494,7 @@ void Larry_musicPlay(void) {
 		fprintf(file, "%s\n", choice);
 		fclose(file);
 	}
+	return 1;
 }
 
 // FNV-1a over the file's bytes, as 16 hex digits after a format number; ""

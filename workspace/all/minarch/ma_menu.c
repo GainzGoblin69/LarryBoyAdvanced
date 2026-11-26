@@ -18,6 +18,7 @@
 #include "ma_cheats.h"
 #include "ma_saves.h"
 #include "ma_romm.h"
+#include "ma_music.h"
 #include "ma_game.h"
 #include "ma_config.h"
 #include "ma_video.h"
@@ -225,6 +226,7 @@ void Menu_quit(void) {
 	SDL_FreeSurface(menu.overlay);
 }
 void Menu_beforeSleep() {
+	GameMusic_beforeSleep();
 	SRAM_write();
 	RTC_write();
 	State_autosave();
@@ -233,6 +235,7 @@ void Menu_beforeSleep() {
 void Menu_afterSleep() {
 	unlink(AUTO_RESUME_PATH);
 	setOverclock(overclock);
+	GameMusic_afterSleep();
 }
 
 
@@ -1913,6 +1916,11 @@ void Menu_loop(void) {
 			Menu_updateState();
 		}
 		
+		// Larry Boy Advanced: X goes round your music, whichever item is selected
+		if (PAD_justPressed(BTN_X) && GameMusic_available()) {
+			GameMusic_cycle();
+			dirty = 1;
+		}
 		if (PAD_justPressed(BTN_B) && selected==ITEM_ROMM && RommSaves_back()) {
 			dirty = 1; // backed out of the confirmation, not the menu
 		}
@@ -2027,6 +2035,8 @@ draw:
 				char** hints = RommSaves_hints();
 				if (hints[0]) GFX_blitButtonGroup(hints, hints[2] ? 1 : 0, screen, 1);
 			}
+			else if (GameMusic_available())
+				GFX_blitButtonGroup((char*[]){ "X",(char*)GameMusic_label(), "B","BACK", "A","OKAY", NULL }, 2, screen, 1);
 			else GFX_blitButtonGroup((char*[]){ "B","BACK", "A","OKAY", NULL }, 1, screen, 1);
 			
 			// list

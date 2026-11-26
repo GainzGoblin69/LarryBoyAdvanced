@@ -2862,6 +2862,7 @@ static void Larry_fileAccess(void) {
 		GFX_sync();
 	}
 
+	Larry_draw(LARRY_FILES_NAME, changes ? "Closing, and putting your changes to use..." : "Closing...", -1, NULL, NULL);
 	LarryJob_cancel(job);
 	LarryJob_free(job);
 	Larry_afterModal();
@@ -2873,7 +2874,18 @@ static void Larry_fileAccess(void) {
 	// edits to the setup files take effect now, and deleted games leave the lists
 	if (changes) {
 		Larry_applySetupFiles();
+		Larry_musicPlay(); // a music.txt just filled in starts playing
 		Larry_rebuildMenu();
+		// back on File Access, where the player was
+		int index = EntryArray_indexOf(top->entries, LARRY_FILES_PATH);
+		if (index >= 0) {
+			top->selected = index;
+			int total = top->entries->count;
+			top->end = index + 1 > MAIN_ROW_COUNT ? index + 1 : MAIN_ROW_COUNT;
+			if (top->end > total) top->end = total;
+			top->start = top->end - MAIN_ROW_COUNT;
+			if (top->start < 0) top->start = 0;
+		}
 	}
 }
 
@@ -3584,8 +3596,11 @@ int main (int argc, char *argv[]) {
 				dirty = 1;
 			}
 			else if (total>0 && PAD_justPressed(BTN_A)) {
+				// read before opening: an item can rebuild the menu (Sync RomM
+				// Library, File Access), and that frees entry
+				int opened_dir = entry->type == ENTRY_DIR;
 				Entry_open(entry);
-				if(entry->type == ENTRY_DIR) {
+				if(opened_dir) {
 					animationdirection = SLIDE_LEFT;
 					total = top->entries->count;
 				}

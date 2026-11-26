@@ -149,6 +149,9 @@ void Larry_setMusicChoice(const char* choice);
 // Plays the chosen music if it is set up: starts the player, or has it carry
 // on after a pause. Anything else stops it.
 void Larry_musicPlay(void);
+// Plays source ("game" or "johnny") if music.txt sets it up, whatever was
+// chosen for the menus: the in-game menu's music. Returns 1 if it plays.
+int Larry_musicPlaySource(const char* source);
 // Pauses the player so a game can have the speaker, waiting up to wait_ms
 // for it to let go.
 void Larry_musicPause(int wait_ms);
