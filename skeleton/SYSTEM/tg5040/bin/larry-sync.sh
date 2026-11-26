@@ -21,11 +21,14 @@ export LD_LIBRARY_PATH="$SYSTEM_PATH/lib/larry:$SYSTEM_PATH/lib:/usr/trimui/lib:
 mkdir -p "$LARRY_HOME" "$LARRY_DIR" || exit 1
 cd "$LARRY_HOME" || exit 1
 
-# Menu music touches neither the catalog nor the saves, and must not wait
-# behind a library sync, so it runs alongside whatever else is running.
-if [ "$1" = music ]; then
+# Menu music and File Access touch neither the catalog nor the saves, and
+# must not wait behind a library sync (nor hold one up while File Access is
+# open), so they run alongside whatever else is running.
+case "$1" in
+music|files)
 	exec "$SYSTEM_PATH/bin/larry-sync" "$@"
-fi
+	;;
+esac
 
 # One at a time. The catalog database is shared, and a full catalog refresh
 # turns its journal off while it runs, so a save upload left running in the

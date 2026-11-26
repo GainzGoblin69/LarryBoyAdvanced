@@ -903,6 +903,7 @@ static Array* getRoot(void) {
 	if (Larry_installed()) {
 		Array_push(root, Entry_newNamed(LARRY_SYNC_PATH, ENTRY_PAK, LARRY_SYNC_NAME));
 		Array_push(root, Entry_newNamed(LARRY_UPDATE_PATH, ENTRY_PAK, LARRY_UPDATE_NAME));
+		Array_push(root, Entry_newNamed(LARRY_FILES_PATH, ENTRY_PAK, LARRY_FILES_NAME));
 		// menu music, once music.txt sets some up
 		int game_music, johnny_music;
 		Larry_readMusicFile(LARRY_MUSIC_FILE, &game_music, &johnny_music);
@@ -1655,6 +1656,8 @@ static void toggleQuick(Entry* self)
 static int Larry_prepareGame(Entry* entry);
 static void Larry_syncLibrary(void);
 static void Larry_checkUpdate(void);
+static void Larry_fileAccess(void);
+static void Larry_applySetupFiles(void);
 
 static void Entry_open(Entry* self) {
 	if (self->type==ENTRY_PAK && exactMatch(self->path, LARRY_SYNC_PATH)) {
@@ -1663,6 +1666,10 @@ static void Entry_open(Entry* self) {
 	}
 	if (self->type==ENTRY_PAK && exactMatch(self->path, LARRY_UPDATE_PATH)) {
 		Larry_checkUpdate();
+		return;
+	}
+	if (self->type==ENTRY_PAK && exactMatch(self->path, LARRY_FILES_PATH)) {
+		Larry_fileAccess();
 		return;
 	}
 	if (self->type==ENTRY_PAK && exactMatch(self->path, LARRY_MUSIC_PATH)) {
@@ -2484,7 +2491,22 @@ static void Larry_draw(const char* title, const char* body, int percent, const c
 // The approval step of linking: a QR code of the pairing address for a phone
 // to scan, with the code and address beside it for typing in by hand. Side by
 // side, because stacked on a 4:3 screen the code would be too small to scan.
+static void Larry_drawQR(const char* title, const char* instruction_text, const char* url,
+		const char* big_line, int show_address, char** hints);
+
 static void Larry_drawPairing(const char* title, const char* url) {
+	char code[64];
+	Larry_pairCode(url, code, sizeof(code));
+	char code_line[96] = "";
+	if (code[0]) snprintf(code_line, sizeof(code_line), "Code %s", code);
+	Larry_drawQR(title, "Scan with your phone, then approve the device.", url, code_line, 1,
+		(char*[]){ "B", "CANCEL", NULL });
+}
+
+// A QR code on the left for a phone to scan, and beside it a title, what to
+// do, one large line, and the address itself for typing in by hand.
+static void Larry_drawQR(const char* title, const char* instruction_text, const char* url,
+		const char* big_line, int show_address, char** hints) {
 	GFX_clearLayers(LAYER_ALL);
 	GFX_clear(screen);
 
@@ -2507,27 +2529,23 @@ static void Larry_drawPairing(const char* title, const char* url) {
 	int text_top = gap;
 	int text_h = screen->h - text_top - hint_h - gap;
 
-	char code[64];
-	Larry_pairCode(url, code, sizeof(code));
-	char code_line[96];
-	snprintf(code_line, sizeof(code_line), "Code %s", code);
-
-	char title_wrapped[256], instruction[512], address[1024];
+	char title_wrapped[256], instruction[512], address[1024], big[256];
 	Larry_wrap(font.large, title, title_wrapped, sizeof(title_wrapped), text_w);
-	Larry_wrap(font.small, drawn ? "Scan with your phone, then approve the device." : "Open this address on your phone, then approve the device.",
-		instruction, sizeof(instruction), text_w);
-	Larry_wrap(font.small, url, address, sizeof(address), text_w);
+	Larry_wrap(font.small, instruction_text, instruction, sizeof(instruction), text_w);
+	Larry_wrap(font.small, show_address ? url : "", address, sizeof(address), text_w);
+	Larry_wrap(font.large, big_line ? big_line : "", big, sizeof(big), text_w);
 
 	int large_h = TTF_FontHeight(font.large);
 	int small_h = TTF_FontHeight(font.small);
-	int title_lines = 1, instruction_lines = 1, address_lines = 1;
+	int title_lines = 1, instruction_lines = 1, address_lines = address[0] ? 1 : 0, big_lines = big[0] ? 1 : 0;
+	for (char* c = big; *c; c++) if (*c == '\n') big_lines++;
 	for (char* c = title_wrapped; *c; c++) if (*c == '\n') title_lines++;
 	for (char* c = instruction; *c; c++) if (*c == '\n') instruction_lines++;
 	for (char* c = address; *c; c++) if (*c == '\n') address_lines++;
 
 	int title_h = large_h * title_lines;
 	int instruction_h = small_h * instruction_lines;
-	int code_h = code[0] ? large_h : 0;
+	int code_h = large_h * big_lines;
 	int address_h = small_h * address_lines;
 	int block_h = title_h + gap + instruction_h + gap * 2 + code_h + address_h;
 	if (block_h > text_h && drawn) {
@@ -2542,13 +2560,13 @@ static void Larry_drawPairing(const char* title, const char* url) {
 	y += title_h + gap;
 	GFX_blitMessage(font.small, instruction, screen, &(SDL_Rect){ text_x, y, text_w, instruction_h });
 	y += instruction_h + gap * 2;
-	if (code[0]) {
-		GFX_blitMessage(font.large, code_line, screen, &(SDL_Rect){ text_x, y, text_w, code_h });
+	if (code_h) {
+		GFX_blitMessage(font.large, big, screen, &(SDL_Rect){ text_x, y, text_w, code_h });
 		y += code_h;
 	}
 	if (address_h) GFX_blitMessage(font.small, address, screen, &(SDL_Rect){ text_x, y, text_w, address_h });
 
-	GFX_blitButtonGroup((char*[]){ "B", "CANCEL", NULL }, 0, screen, 1);
+	GFX_blitButtonGroup(hints, 0, screen, 1);
 	GFX_flip(screen);
 }
 
@@ -2790,6 +2808,73 @@ static void Larry_updateFailure(int code, LarryJob* result, const char* doing, c
 	if (code == LARRY_EXIT_UNREACHABLE) snprintf(out, size, "Could not reach GitHub to %s. Check Wi-Fi, then try again.", doing);
 	else if (result->error[0]) snprintf(out, size, "Could not %s: %s", doing, result->error);
 	else snprintf(out, size, "Could not %s (code %d).", doing, code);
+}
+
+// File Access: serves the card to a phone on the same Wi-Fi, as a page to
+// look through, delete files and edit text files, for as long as this screen
+// is up. The QR code carries the page's address and its key, which is made
+// up afresh each time. B stops it.
+static void Larry_fileAccess(void) {
+	if (!Larry_waitOnline(15, "File Access needs Wi-Fi.")) {
+		Larry_tell(LARRY_FILES_NAME, "Wi-Fi is not connected. Connect in Tools > Settings > Network, then try again.");
+		return;
+	}
+	const char* args[] = { "files", "serve", NULL };
+	LarryJob* job = LarryJob_start(args);
+	if (!job) {
+		Larry_tell(LARRY_FILES_NAME, "File Access could not start.");
+		return;
+	}
+
+	static LarryJob now; // large: kept off the stack
+	char last[LARRY_TEXT] = "";
+	char status[LARRY_TEXT] = "";
+	int changes = 0;
+	int redraw = 1;
+	int failed = 0;
+	PAD_reset();
+	while (1) {
+		GFX_startFrame();
+		PAD_poll();
+		LarryJob_snapshot(job, &now);
+		if (PAD_justPressed(BTN_B)) break;
+		if (now.finished) {
+			failed = 1;
+			break;
+		}
+		// what the phone last did, from the server's own report
+		if (now.info[0] && strcmp(now.info, last)) {
+			snprintf(last, sizeof(last), "%s", now.info);
+			snprintf(status, sizeof(status), "%s", now.info);
+			changes++;
+			redraw = 1;
+		}
+		if (redraw && now.files_url[0]) {
+			Larry_drawQR(LARRY_FILES_NAME,
+				"Scan with your phone on the same Wi-Fi to look through the card, delete files and edit text files.",
+				now.files_url, status[0] ? status : "Ready", 0, (char*[]){ "B", "STOP", NULL });
+			redraw = 0;
+		}
+		else if (redraw && !now.files_url[0]) {
+			Larry_draw(LARRY_FILES_NAME, "Starting...", -1, NULL, (char*[]){ "B", "CANCEL", NULL });
+			// drawn again once the address is known
+		}
+		GFX_sync();
+	}
+
+	LarryJob_cancel(job);
+	LarryJob_free(job);
+	Larry_afterModal();
+	if (failed) {
+		char why[LARRY_TEXT + 64];
+		snprintf(why, sizeof(why), "File Access stopped: %s", now.error[0] ? now.error : "it could not start.");
+		Larry_tell(LARRY_FILES_NAME, why);
+	}
+	// edits to the setup files take effect now, and deleted games leave the lists
+	if (changes) {
+		Larry_applySetupFiles();
+		Larry_rebuildMenu();
+	}
 }
 
 // Check for Updates: asks GitHub for the newest release, and if it is a

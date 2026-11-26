@@ -41,6 +41,9 @@
 // the main-menu item that updates the firmware from its GitHub releases
 #define LARRY_UPDATE_PATH SDCARD_PATH "/.larry-update"
 #define LARRY_UPDATE_NAME "Check for Updates"
+// the main-menu item that opens the card to a phone over Wi-Fi
+#define LARRY_FILES_PATH SDCARD_PATH "/.larry-files"
+#define LARRY_FILES_NAME "File Access"
 
 // Menu music: set up in music.txt, chosen from the main menu, played by a
 // player of its own while the menus are up.
@@ -211,6 +214,7 @@ typedef struct LarryJob {
 	long long total;
 	char rom_path[LARRY_PATH];
 	char pair_url[LARRY_PATH];
+	char files_url[LARRY_PATH]; // File Access: the page's address, with its key
 	// what the save check found: -1 when it did not report
 	int saves_downloaded;
 	int saves_conflicts;
