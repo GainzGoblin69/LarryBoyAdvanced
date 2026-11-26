@@ -369,6 +369,132 @@ int Larry_readRAFile(const char* path, char* username, size_t username_size, cha
 	return username[0] && password[0];
 }
 
+void Larry_readMusicFile(const char* path, int* game, int* johnny) {
+	*game = 0;
+	*johnny = 0;
+	FILE* file = fopen(path, "r");
+	if (!file) return;
+	char line[LARRY_TEXT];
+	while (fgets(line, sizeof(line), file)) {
+		char *key, *value;
+		if (!keyValue(line, &key, &value) || !value[0]) continue;
+		if (!strcmp(key, "game music")) *game = 1;
+		else if (!strcmp(key, "johnny music password")) *johnny = 1;
+	}
+	fclose(file);
+}
+
+void Larry_musicChoice(char* out, size_t size) {
+	copyText(out, size, "game");
+	FILE* file = fopen(LARRY_MUSIC_CHOICE, "r");
+	if (!file) return;
+	char line[32] = "";
+	if (fgets(line, sizeof(line), file)) {
+		chomp(line);
+		if (!strcmp(line, "game") || !strcmp(line, "johnny") || !strcmp(line, "off")) copyText(out, size, line);
+	}
+	fclose(file);
+}
+
+void Larry_setMusicChoice(const char* choice) {
+	mkdir(LARRY_HOME, 0755);
+	FILE* file = fopen(LARRY_MUSIC_CHOICE, "w");
+	if (!file) return;
+	fprintf(file, "%s\n", choice);
+	fclose(file);
+}
+
+// The running player's PID, or 0.
+static pid_t musicPid(void) {
+	FILE* file = fopen(LARRY_MUSIC_PID, "r");
+	if (!file) return 0;
+	int pid = 0;
+	if (fscanf(file, "%d", &pid) != 1) pid = 0;
+	fclose(file);
+	if (pid <= 1 || kill(pid, 0) != 0) return 0;
+	return pid;
+}
+
+static void runningSource(char* out, size_t size) {
+	copyText(out, size, "");
+	FILE* file = fopen(LARRY_MUSIC_SOURCE, "r");
+	if (!file) return;
+	if (fgets(out, size, file)) chomp(out);
+	fclose(file);
+}
+
+void Larry_musicStop(void) {
+	pid_t pid = musicPid();
+	if (pid) {
+		kill(pid, SIGTERM);
+		for (int i = 0; i < 20 && kill(pid, 0) == 0; i++) usleep(50000);
+	}
+	unlink(LARRY_MUSIC_SOURCE);
+}
+
+void Larry_musicPause(int wait_ms) {
+	pid_t pid = musicPid();
+	if (!pid) return;
+	unlink(LARRY_MUSIC_PAUSED);
+	kill(pid, SIGUSR1);
+	for (int waited = 0; waited < wait_ms && !exists(LARRY_MUSIC_PAUSED); waited += 20) usleep(20000);
+}
+
+void Larry_musicPlay(void) {
+	char choice[16];
+	Larry_musicChoice(choice, sizeof(choice));
+	int game, johnny;
+	Larry_readMusicFile(LARRY_MUSIC_FILE, &game, &johnny);
+	int wanted = (!strcmp(choice, "game") && game) || (!strcmp(choice, "johnny") && johnny);
+	if (!wanted || !exists(LARRY_MUSIC_PLAYER)) {
+		Larry_musicStop();
+		return;
+	}
+
+	char running[16];
+	runningSource(running, sizeof(running));
+	pid_t pid = musicPid();
+	if (pid && !strcmp(running, choice)) {
+		kill(pid, SIGUSR2); // carry on from the pause
+		return;
+	}
+	Larry_musicStop();
+
+	// Started twice removed, so it is never the launcher's child: it outlives
+	// the launcher between games, and the launcher's waits for larry-sync
+	// never see it end.
+	pid = fork();
+	if (pid < 0) return;
+	if (pid == 0) {
+		setsid();
+		if (fork() != 0) _exit(0);
+
+		char log_path[LARRY_PATH];
+		snprintf(log_path, sizeof(log_path), "%s/logs", LARRY_HOME);
+		mkdir(log_path, 0755);
+		snprintf(log_path, sizeof(log_path), "%s/logs/music.log", LARRY_HOME);
+		int log = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		int null = open("/dev/null", O_RDWR);
+		if (null >= 0) dup2(null, STDIN_FILENO);
+		if (log >= 0) {
+			dup2(log, STDOUT_FILENO);
+			dup2(log, STDERR_FILENO);
+		}
+		for (int fd = 3; fd < 256; fd++) close(fd);
+		signal(SIGPIPE, SIG_DFL);
+		signal(SIGCHLD, SIG_DFL);
+		execl(LARRY_MUSIC_PLAYER, LARRY_MUSIC_PLAYER, choice, (char*)NULL);
+		_exit(127);
+	}
+	while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+
+	FILE* file = fopen(LARRY_MUSIC_SOURCE, "w");
+	if (file) {
+		fprintf(file, "%s\n", choice);
+		fclose(file);
+	}
+}
+
 // FNV-1a over the file's bytes, as 16 hex digits after a format number; ""
 // if it cannot be read. Raising the number has every file applied once more
 // on cards updated to the new firmware: 2 brought reporting on Wi-Fi.

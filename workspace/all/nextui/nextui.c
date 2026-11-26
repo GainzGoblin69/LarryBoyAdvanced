@@ -158,6 +158,17 @@ static Entry* Entry_new(char* path, int type) {
 	return self;
 }
 
+// Larry Boy Advanced: the menu music item's label, which says what plays.
+static const char* Larry_musicLabel(void) {
+	char choice[16];
+	Larry_musicChoice(choice, sizeof(choice));
+	int game, johnny;
+	Larry_readMusicFile(LARRY_MUSIC_FILE, &game, &johnny);
+	if (!strcmp(choice, "johnny") && johnny) return "Music: Johnny Music";
+	if (!strcmp(choice, "game") && game) return "Music: Game Music";
+	return "Music: Off";
+}
+
 static Entry* Entry_newNamed(char* path, int type, char* displayName) {
 	Entry *self = Entry_new(path, type);
 	self->name = strdup(displayName);
@@ -892,6 +903,11 @@ static Array* getRoot(void) {
 	if (Larry_installed()) {
 		Array_push(root, Entry_newNamed(LARRY_SYNC_PATH, ENTRY_PAK, LARRY_SYNC_NAME));
 		Array_push(root, Entry_newNamed(LARRY_UPDATE_PATH, ENTRY_PAK, LARRY_UPDATE_NAME));
+		// menu music, once music.txt sets some up
+		int game_music, johnny_music;
+		Larry_readMusicFile(LARRY_MUSIC_FILE, &game_music, &johnny_music);
+		if (game_music || johnny_music)
+			Array_push(root, Entry_newNamed(LARRY_MUSIC_PATH, ENTRY_PAK, (char*)Larry_musicLabel()));
 	}
 
 	// Add tools if applicable
@@ -1619,13 +1635,17 @@ static void toggleQuick(Entry* self)
 		BT_enable(!BT_enabled());
 	}
 	else if(!strcmp(self->name, "Sleep")) {
+		Larry_musicPause(500);
 		PWR_sleep();
+		Larry_musicPlay();
 	}
 	else if(!strcmp(self->name, "Reboot")) {
+		Larry_musicStop();
 		cleanupImageLoaderPool();  // Stop worker threads before SDL cleanup
 		PWR_powerOff(1);
 	}
 	else if(!strcmp(self->name, "Poweroff")) {
+		Larry_musicStop();
 		cleanupImageLoaderPool();  // Stop worker threads before SDL cleanup
 		PWR_powerOff(0);
 	}
@@ -1643,6 +1663,27 @@ static void Entry_open(Entry* self) {
 	}
 	if (self->type==ENTRY_PAK && exactMatch(self->path, LARRY_UPDATE_PATH)) {
 		Larry_checkUpdate();
+		return;
+	}
+	if (self->type==ENTRY_PAK && exactMatch(self->path, LARRY_MUSIC_PATH)) {
+		// A goes round what music.txt sets up, then off
+		char choice[16];
+		Larry_musicChoice(choice, sizeof(choice));
+		int game, johnny;
+		Larry_readMusicFile(LARRY_MUSIC_FILE, &game, &johnny);
+		const char* order[3];
+		int count = 0;
+		if (game) order[count++] = "game";
+		if (johnny) order[count++] = "johnny";
+		order[count++] = "off";
+		int at = count - 1; // anything unknown counts as off
+		for (int i = 0; i < count; i++) if (!strcmp(order[i], choice)) at = i;
+		// a choice that is no longer set up shows as off, so it moves on from there
+		if (strcmp(Larry_musicLabel(), "Music: Off") == 0) at = count - 1;
+		Larry_setMusicChoice(order[(at + 1) % count]);
+		Larry_musicPlay();
+		free(self->name);
+		self->name = strdup(Larry_musicLabel());
 		return;
 	}
 	if (self->rom_id > 0) {
@@ -2802,6 +2843,7 @@ static void Larry_checkUpdate(void) {
 		return;
 	}
 
+	Larry_musicStop();
 	Larry_flash("Update downloaded", "Restarting to install it...");
 	cleanupImageLoaderPool(); // stop worker threads before SDL cleanup, as Reboot does
 	PWR_powerOff(1);
@@ -3070,6 +3112,14 @@ static void Larry_toggleSort(Directory* dir) {
 	if (dir->start < 0) dir->start = 0;
 }
 
+// Larry Boy Advanced: no menu music while the screen is off.
+static void Larry_musicBeforeSleep(void) {
+	Larry_musicPause(500);
+}
+static void Larry_musicAfterSleep(void) {
+	Larry_musicPlay();
+}
+
 int main (int argc, char *argv[]) {
 	// LOG_info("time from launch to:\n");
 	// unsigned long main_begin = SDL_GetTicks();
@@ -3096,6 +3146,7 @@ int main (int argc, char *argv[]) {
 	// linking RomM and syncing the library on a fresh card
 	Larry_applySetupFiles();
 	Larry_firstRun();
+	Larry_musicPlay(); // menu music, picking up where it paused for a game
 
 	// start my threaded image loader :D
 	initImageLoaderPool();
@@ -3163,7 +3214,7 @@ int main (int argc, char *argv[]) {
 		int selected = top->selected;
 		int total = top->entries->count;
 
-		PWR_update(&dirty, &show_setting, NULL, NULL);
+		PWR_update(&dirty, &show_setting, Larry_musicBeforeSleep, Larry_musicAfterSleep);
 
 		// user-assignable buttons, handled before the per-screen input so they work
 		// from the game list, the game switcher and the quick menu alike.
@@ -4262,6 +4313,10 @@ int main (int argc, char *argv[]) {
 			quit = 1;
 		}
 	}
+
+	// Larry Boy Advanced: the menu music lets go of the speaker before
+	// whatever runs next (a game, a tool) wants it
+	Larry_musicPause(1000);
 
 	Menu_quit();
 	PWR_quit();

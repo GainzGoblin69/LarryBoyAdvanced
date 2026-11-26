@@ -83,3 +83,23 @@ if { [ "$TRIMUI_MODEL" = "Trimui Brick" ] || [ "$TRIMUI_MODEL" = "Trimui Brick P
 		umount "$BOOT_PATH"
 	fi
 fi
+
+# --------------------------------------
+# Larry Boy Advanced: the menu music settings file, for cards set up before
+# it existed. One already there is never touched.
+MUSIC_FILE=${SDCARD_PATH}/music.txt
+if [ ! -f "$MUSIC_FILE" ]; then
+	cat > "$MUSIC_FILE" <<'MUSIC'
+# Larry Boy Advanced: menu music
+#
+# Music plays while you browse the menus, and pauses while you play. It
+# streams from your Copyparty music server: fill in the password for your
+# Game Music folder below. Choose what plays with "Music" on the main menu.
+#
+# This file is left as you write it, so the password stays here in plain
+# text.
+
+game music: https://music.alice99.box.ca/music/
+game music password:
+MUSIC
+fi

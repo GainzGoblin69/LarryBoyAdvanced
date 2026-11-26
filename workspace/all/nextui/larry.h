@@ -42,6 +42,16 @@
 #define LARRY_UPDATE_PATH SDCARD_PATH "/.larry-update"
 #define LARRY_UPDATE_NAME "Check for Updates"
 
+// Menu music: set up in music.txt, chosen from the main menu, played by a
+// player of its own while the menus are up.
+#define LARRY_MUSIC_FILE SDCARD_PATH "/music.txt"
+#define LARRY_MUSIC_CHOICE LARRY_HOME "/music-choice"
+#define LARRY_MUSIC_PLAYER SYSTEM_PATH "/bin/larry-music.elf"
+#define LARRY_MUSIC_PID "/tmp/larry-music.pid"
+#define LARRY_MUSIC_PAUSED "/tmp/larry-music.paused"
+#define LARRY_MUSIC_SOURCE "/tmp/larry-music.source"
+#define LARRY_MUSIC_PATH SDCARD_PATH "/.larry-music"
+
 // Exit codes larry-sync uses, so a caller can branch without reading text.
 #define LARRY_EXIT_OK 0
 #define LARRY_EXIT_FAILED 1
@@ -127,6 +137,20 @@ int Larry_readWifiFile(const char* path, LarryWifiNetwork* out, int max, char* p
 // Reads retroachievements.txt. Returns 1 when it has both a username and a
 // password.
 int Larry_readRAFile(const char* path, char* username, size_t username_size, char* password, size_t password_size);
+
+// Which music music.txt sets up: game soundtracks, and Johnny Music.
+void Larry_readMusicFile(const char* path, int* game, int* johnny);
+// The music chosen to play in the menus: "game", "johnny" or "off".
+void Larry_musicChoice(char* out, size_t size);
+void Larry_setMusicChoice(const char* choice);
+// Plays the chosen music if it is set up: starts the player, or has it carry
+// on after a pause. Anything else stops it.
+void Larry_musicPlay(void);
+// Pauses the player so a game can have the speaker, waiting up to wait_ms
+// for it to let go.
+void Larry_musicPause(int wait_ms);
+// Stops the player.
+void Larry_musicStop(void);
 
 // Whether path's contents are what was last marked applied in stamp. A file
 // that does not exist counts as applied, so deleting one changes nothing.

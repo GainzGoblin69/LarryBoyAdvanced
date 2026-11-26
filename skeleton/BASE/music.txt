@@ -1,0 +1,11 @@
+# Larry Boy Advanced: menu music
+#
+# Music plays while you browse the menus, and pauses while you play. It
+# streams from your Copyparty music server: fill in the password for your
+# Game Music folder below. Choose what plays with "Music" on the main menu.
+#
+# This file is left as you write it, so the password stays here in plain
+# text.
+
+game music: https://music.alice99.box.ca/music/
+game music password:

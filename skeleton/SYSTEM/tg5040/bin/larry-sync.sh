@@ -21,6 +21,12 @@ export LD_LIBRARY_PATH="$SYSTEM_PATH/lib/larry:$SYSTEM_PATH/lib:/usr/trimui/lib:
 mkdir -p "$LARRY_HOME" "$LARRY_DIR" || exit 1
 cd "$LARRY_HOME" || exit 1
 
+# Menu music touches neither the catalog nor the saves, and must not wait
+# behind a library sync, so it runs alongside whatever else is running.
+if [ "$1" = music ]; then
+	exec "$SYSTEM_PATH/bin/larry-sync" "$@"
+fi
+
 # One at a time. The catalog database is shared, and a full catalog refresh
 # turns its journal off while it runs, so a save upload left running in the
 # background after a game must finish before the next command starts.

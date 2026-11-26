@@ -62,6 +62,7 @@ ifneq (,$(filter $(PLATFORM),tg5040 tg5050 h700))
 endif
 	cd ./all/audiomon && make all
 	cd ./all/show2/ && make
+	cd ./all/larrymusic/ && make
 endif
 ifdef COMPILE_CORES
 	make cores
@@ -90,6 +91,7 @@ ifneq (,$(filter $(PLATFORM),tg5040 tg5050 h700))
 	cd ./all/bootlogo/ && make clean
 endif
 	cd ./all/show2/ && make clean
+	cd ./all/larrymusic/ && make clean
 	cd ./all/batmon/ && make clean
 ifeq ($(PLATFORM), tg5040)
 	cd ./$(PLATFORM)/rfkill && make clean
