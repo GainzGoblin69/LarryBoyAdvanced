@@ -144,7 +144,7 @@ int main (int argc, char *argv[]) {
 	uint32_t down_just_pressed = 0;
 	uint32_t down_repeat_at = 0;
 
-	// Larry Boy Advanced: the D-pad, for Select + up/down (volume) and
+	// Larry Boy Advanced: the D-pad, for Select + up/down (brightness) and
 	// Select + left/right (the music's song)
 	int hat_x = 0, hat_y = 0;
 	uint32_t dpad_up_pressed = 0, dpad_up_just_pressed = 0, dpad_up_repeat_at = 0;
@@ -272,14 +272,14 @@ int main (int argc, char *argv[]) {
 		// Larry Boy Advanced: Select + D-pad. menu2_pressed is Select.
 		if (menu2_pressed && !menu_pressed) {
 			if (dpad_up_just_pressed || (dpad_up_pressed && now>=dpad_up_repeat_at)) {
-				val = GetVolume();
-				if (val<VOLUME_MAX) SetVolume(++val);
+				val = GetBrightness();
+				if (val<BRIGHTNESS_MAX) SetBrightness(++val);
 				if (dpad_up_just_pressed) dpad_up_just_pressed = 0;
 				else dpad_up_repeat_at += 100;
 			}
 			if (dpad_down_just_pressed || (dpad_down_pressed && now>=dpad_down_repeat_at)) {
-				val = GetVolume();
-				if (val>VOLUME_MIN) SetVolume(--val);
+				val = GetBrightness();
+				if (val>BRIGHTNESS_MIN) SetBrightness(--val);
 				if (dpad_down_just_pressed) dpad_down_just_pressed = 0;
 				else dpad_down_repeat_at += 100;
 			}
