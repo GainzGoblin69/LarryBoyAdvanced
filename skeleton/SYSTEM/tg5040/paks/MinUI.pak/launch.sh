@@ -191,13 +191,20 @@ while [ -f $EXEC_PATH ]; do
 		CMD=`cat $NEXT_PATH`
 		parse_hook_cmd "$CMD"
 		"$SYSTEM_PATH/bin/run_hooks.sh" pre-launch.d
+		rm -f /tmp/larry-push.done # an older game's result, not shown in time
 		eval $CMD
 		"$SYSTEM_PATH/bin/run_hooks.sh" post-launch.d
 		# Larry Boy Advanced: send the save from the game just played to RomM.
 		# In the background, so the menu comes straight back; with no Wi-Fi it
 		# gives up quickly and the save goes up after the next game instead.
+		# What larry-sync said goes to /tmp/larry-push.done once it is done,
+		# and the menu shows whether the save went up.
 		if [ "$HOOK_TYPE" = "rom" ] && [ -f "$SHARED_USERDATA_PATH/larry/config.json" ]; then
-			"$SYSTEM_PATH/bin/larry-sync.sh" saves --direction push > /dev/null 2>&1 &
+			(
+				"$SYSTEM_PATH/bin/larry-sync.sh" saves --direction push > /tmp/larry-push.out 2> /dev/null
+				printf 'EXIT\t%s\n' "$?" >> /tmp/larry-push.out
+				mv /tmp/larry-push.out /tmp/larry-push.done
+			) &
 		fi
 		rm -f $NEXT_PATH
 		# reset to performance when exiting, UI will reset to auto if needed

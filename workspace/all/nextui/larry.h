@@ -141,6 +141,13 @@ int Larry_readWifiFile(const char* path, LarryWifiNetwork* out, int max, char* p
 // password.
 int Larry_readRAFile(const char* path, char* username, size_t username_size, char* password, size_t password_size);
 
+// After a game, launch.sh sends its save to RomM in the background and leaves
+// what larry-sync said here once it is done.
+#define LARRY_PUSH_RESULT "/tmp/larry-push.done"
+// Reads that result into a line to show, and clears it. Returns 1 when there
+// is something to show.
+int Larry_readPushResult(const char* path, char* message, size_t size);
+
 // Which music music.txt sets up: game soundtracks, and Johnny Music.
 void Larry_readMusicFile(const char* path, int* game, int* johnny);
 // The music chosen to play in the menus: "game", "johnny" or "off".

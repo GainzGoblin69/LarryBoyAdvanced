@@ -3209,6 +3209,48 @@ static void Larry_toggleSort(Directory* dir) {
 	if (dir->start < 0) dir->start = 0;
 }
 
+// Larry Boy Advanced: a line along the bottom left of the menu, in place of
+// the button hints there, for a few seconds: what happened to the save of
+// the game just quit.
+#define LARRY_TOAST_MS 4500
+static char larry_toast[LARRY_TEXT] = "";
+static uint32_t larry_toast_until = 0;
+static uint32_t larry_toast_checked_at = 0;
+
+// Picks up a finished save upload. Returns 1 when the menu needs drawing.
+static int Larry_pollToast(void) {
+	uint32_t now = SDL_GetTicks();
+	if (larry_toast[0] && now >= larry_toast_until) {
+		larry_toast[0] = '\0';
+		return 1;
+	}
+	if (now - larry_toast_checked_at < 500) return 0;
+	larry_toast_checked_at = now;
+	char message[LARRY_TEXT];
+	if (!Larry_readPushResult(LARRY_PUSH_RESULT, message, sizeof(message))) return 0;
+	snprintf(larry_toast, sizeof(larry_toast), "%s", message);
+	larry_toast_until = now + LARRY_TOAST_MS;
+	return 1;
+}
+
+// Draws the line, if there is one. Returns 1 if it did.
+static int Larry_blitToast(SDL_Surface* dst) {
+	if (!larry_toast[0]) return 0;
+	int pad = SCALE1(BUTTON_MARGIN * 2);
+	int max_w = dst->w * 3 / 4;
+	char text[LARRY_TEXT];
+	GFX_truncateText(font.small, larry_toast, text, max_w - pad * 2, 0);
+	SDL_Surface* rendered = TTF_RenderUTF8_Blended(font.small, text, COLOR_WHITE);
+	if (!rendered) return 0;
+	int w = rendered->w + pad * 2;
+	int x = SCALE1(PADDING);
+	int y = dst->h - SCALE1(PADDING + PILL_SIZE);
+	GFX_blitPillColor(ASSET_WHITE_PILL, dst, &(SDL_Rect){ x, y, w, SCALE1(PILL_SIZE) }, THEME_COLOR2, RGB_WHITE);
+	SDL_BlitSurface(rendered, NULL, dst, &(SDL_Rect){ x + pad, y + (SCALE1(PILL_SIZE) - rendered->h) / 2 });
+	SDL_FreeSurface(rendered);
+	return 1;
+}
+
 // Larry Boy Advanced: no menu music while the screen is off.
 static void Larry_musicBeforeSleep(void) {
 	Larry_musicPause(500);
@@ -3312,6 +3354,7 @@ int main (int argc, char *argv[]) {
 		int total = top->entries->count;
 
 		PWR_update(&dirty, &show_setting, Larry_musicBeforeSleep, Larry_musicAfterSleep);
+		if (Larry_pollToast()) dirty = 1;
 
 		// user-assignable buttons, handled before the per-screen input so they work
 		// from the game list, the game switcher and the quick menu alike.
@@ -4037,6 +4080,7 @@ int main (int argc, char *argv[]) {
 
 				// buttons
 				if (show_setting && !GetHDMI()) GFX_blitHardwareHints(screen, show_setting);
+				else if (Larry_blitToast(screen)) {} // the save just sent to RomM
 				else if (can_resume) GFX_blitButtonGroup((char*[]){ "X","RESUME",  NULL }, 0, screen, 0);
 				else GFX_blitButtonGroup((char*[]){
 					BTN_SLEEP==BTN_POWER?"POWER":"MENU",

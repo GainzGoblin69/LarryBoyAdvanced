@@ -369,6 +369,38 @@ int Larry_readRAFile(const char* path, char* username, size_t username_size, cha
 	return username[0] && password[0];
 }
 
+int Larry_readPushResult(const char* path, char* message, size_t size) {
+	FILE* file = fopen(path, "r");
+	if (!file) return 0;
+	int code = -1, uploaded = 0, errors = 0;
+	char game[256] = "", error[LARRY_TEXT] = "";
+	char line[LARRY_TEXT];
+	while (fgets(line, sizeof(line), file)) {
+		chomp(line);
+		char* fields[3] = { 0 };
+		int count = splitTabs(line, fields, 3);
+		if (count >= 2 && !strcmp(fields[0], "EXIT")) code = atoi(fields[1]);
+		else if (count >= 2 && !strcmp(fields[0], "ERROR")) copyText(error, sizeof(error), fields[1]);
+		else if (count >= 3 && !strcmp(fields[0], "RESULT")) {
+			if (!strcmp(fields[1], "saves_uploaded")) uploaded = atoi(fields[2]);
+			else if (!strcmp(fields[1], "saves_errors")) errors = atoi(fields[2]);
+			else if (!strcmp(fields[1], "uploaded_game") && !game[0]) copyText(game, sizeof(game), fields[2]);
+		}
+	}
+	fclose(file);
+	unlink(path);
+
+	if (code == LARRY_EXIT_OK && uploaded == 1 && game[0]) snprintf(message, size, "Save uploaded to RomM: %s", game);
+	else if (code == LARRY_EXIT_OK && uploaded > 0) snprintf(message, size, "%d saves uploaded to RomM", uploaded);
+	else if (code == LARRY_EXIT_OK && errors > 0) snprintf(message, size, "A save did not upload. It will try again next time.");
+	else if (code == LARRY_EXIT_OK) snprintf(message, size, "Save already up to date on RomM");
+	else if (code == LARRY_EXIT_UNREACHABLE) snprintf(message, size, "Couldn't reach RomM. Your save will go up next time.");
+	else if (code == LARRY_EXIT_NOT_PAIRED || code == -1) return 0;
+	else if (error[0]) snprintf(message, size, "Save upload failed: %s", error);
+	else snprintf(message, size, "Save upload failed (code %d)", code);
+	return 1;
+}
+
 void Larry_readMusicFile(const char* path, int* game, int* johnny) {
 	*game = 0;
 	*johnny = 0;
