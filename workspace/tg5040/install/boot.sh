@@ -38,7 +38,9 @@ fi
 if [ "$SHOW_SPLASH" = "yes" ] ; then
 	cd $(dirname "$0")/$PLATFORM
 	if [ "$DEVICE" = "brick" ] || [ "$DEVICE" = "brickpro" ]; then
-		./show2.elf --mode=daemon --image="$LOGO_PATH" --text="Installing..." --logoheight=144 --fontsize=32 --progress=-1 &
+		# Larry Boy Advanced: the logo is the dog and the name, so it is shown
+		# large, with the words below it
+		./show2.elf --mode=daemon --image="$LOGO_PATH" --text="Installing..." --logoheight=450 --texty=85 --progressy=93 --fontsize=32 --progress=-1 &
 	else
 		./show2.elf --mode=daemon --image="$LOGO_PATH" --text="Installing..." --logoheight=128 --progress=-1 &
 	fi
@@ -84,9 +86,9 @@ done
 if [ -f "$UPDATE_PATH" ]; then 
 	cd $(dirname "$0")/$PLATFORM
 	if [ -d "$SYSTEM_PATH" ]; then
-		echo "TEXT:Updating NextUI" > /tmp/show2.fifo
+		echo "TEXT:Updating Larry Boy Advanced" > /tmp/show2.fifo
 	else
-		echo "TEXT:Installing NextUI" > /tmp/show2.fifo
+		echo "TEXT:Installing Larry Boy Advanced" > /tmp/show2.fifo
 	fi
 
 	# clean replacement for core paths

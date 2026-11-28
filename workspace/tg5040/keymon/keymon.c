@@ -41,6 +41,8 @@
 
 #define MUTE_STATE_PATH "/sys/class/gpio/gpio243/value"
 
+
+
 #define INPUT_COUNT 5
 static int inputs[INPUT_COUNT] = {};
 static struct input_event ev;
@@ -56,6 +58,20 @@ static int getInt(char* path) {
 		fclose(file);
 	}
 	return i;
+}
+
+// Larry Boy Advanced: the menu music player, told to change song by signal
+#define MUSIC_PID_PATH "/tmp/larry-music.pid"
+#define MUSIC_PAUSED_PATH "/tmp/larry-music.paused"
+#define MUSIC_NEXT_SIGNAL (SIGRTMIN + 1)
+#define MUSIC_PREVIOUS_SIGNAL (SIGRTMIN + 2)
+
+// Changes the song if music is playing: not while it is paused for a game
+// that has the speaker, nor when there is none.
+static void musicSkip(int sig) {
+	if (access(MUSIC_PAUSED_PATH, F_OK) == 0) return;
+	int pid = getInt(MUSIC_PID_PATH);
+	if (pid > 1 && kill(pid, 0) == 0) kill(pid, sig);
 }
 
 int stringEquals(const char* str1, const char* str2) {
@@ -127,6 +143,13 @@ int main (int argc, char *argv[]) {
 	uint32_t down_pressed = 0;
 	uint32_t down_just_pressed = 0;
 	uint32_t down_repeat_at = 0;
+
+	// Larry Boy Advanced: the D-pad, for Select + up/down (brightness) and
+	// Select + left/right (the music's song)
+	int hat_x = 0, hat_y = 0;
+	uint32_t dpad_up_pressed = 0, dpad_up_just_pressed = 0, dpad_up_repeat_at = 0;
+	uint32_t dpad_down_pressed = 0, dpad_down_just_pressed = 0, dpad_down_repeat_at = 0;
+	int skip = 0; // +1 next song, -1 previous, once per press
 	
 	uint8_t ignore;
 	uint32_t then;
@@ -154,6 +177,23 @@ int main (int argc, char *argv[]) {
 						SetJack(val);
 					}
 				}
+				if (ev.type==EV_ABS && (ev.code==ABS_HAT0X || ev.code==ABS_HAT0Y)) {
+					int value = ev.value < 0 ? -1 : ev.value > 0 ? 1 : 0;
+					if (ev.code==ABS_HAT0Y) {
+						if (value != hat_y) {
+							dpad_up_pressed = dpad_up_just_pressed = value < 0;
+							dpad_down_pressed = dpad_down_just_pressed = value > 0;
+							if (value < 0) dpad_up_repeat_at = now + 300;
+							if (value > 0) dpad_down_repeat_at = now + 300;
+						}
+						hat_y = value;
+					}
+					else {
+						if (value != hat_x && value != 0) skip = value;
+						hat_x = value;
+					}
+					continue;
+				}
 				if (( ev.type != EV_KEY ) || ( val > REPEAT )) continue;
 				//printf("code: %i (%i)\n", ev.code, val); fflush(stdout);
 				switch (ev.code) {
@@ -178,6 +218,9 @@ int main (int argc, char *argv[]) {
 		}
 		
 		if (ignore) {
+			hat_x = hat_y = 0;
+			dpad_up_pressed = dpad_up_just_pressed = dpad_down_pressed = dpad_down_just_pressed = 0;
+			skip = 0;
 			menu_pressed = 0;
 			menu2_pressed = 0;
 			up_pressed = up_just_pressed = 0;
@@ -226,6 +269,30 @@ int main (int argc, char *argv[]) {
 			else down_repeat_at += 100;
 		}
 		
+		// Larry Boy Advanced: Select + D-pad. menu2_pressed is Select. Not in
+		// controller mode, where Select and the D-pad are the TV's.
+		if (menu2_pressed && !menu_pressed && access("/tmp/larry-pad.active", F_OK) != 0) {
+			if (dpad_up_just_pressed || (dpad_up_pressed && now>=dpad_up_repeat_at)) {
+				val = GetBrightness();
+				if (val<BRIGHTNESS_MAX) SetBrightness(++val);
+				if (dpad_up_just_pressed) dpad_up_just_pressed = 0;
+				else dpad_up_repeat_at += 100;
+			}
+			if (dpad_down_just_pressed || (dpad_down_pressed && now>=dpad_down_repeat_at)) {
+				val = GetBrightness();
+				if (val>BRIGHTNESS_MIN) SetBrightness(--val);
+				if (dpad_down_just_pressed) dpad_down_just_pressed = 0;
+				else dpad_down_repeat_at += 100;
+			}
+			if (skip) musicSkip(skip > 0 ? MUSIC_NEXT_SIGNAL : MUSIC_PREVIOUS_SIGNAL);
+		}
+		else {
+			// pressed without Select: not a combo, and not one later either
+			dpad_up_just_pressed = dpad_down_just_pressed = 0;
+			dpad_up_pressed = dpad_down_pressed = 0;
+		}
+		skip = 0;
+
 		then = now;
 		ignore = 0;
 		

@@ -1,3 +1,4 @@
+#include "ma_music.h"
 #include <stdbool.h>
 #include <SDL2/SDL.h>
 #include <msettings.h>
@@ -26,12 +27,16 @@ void Audio_onSinkChanged(int device, int watch_event) {
 
 void Audio_checkAndResetIfNeeded(void) {
 	if (!resetAudio) return;
+	// the music player has the speaker; the game takes it back when the music
+	// is turned off, with whichever device is current then
+	if (GameMusic_isOn()) return;
 	resetAudio = false;
 	LOG_info("Resetting audio device config! (new state: %s)\n", SDL_getenv("AUDIODEV"));
 	SND_resetAudio(core.sample_rate, core.fps);
 }
 
 void audio_sample_callback(int16_t left, int16_t right) {
+	if (GameMusic_isOn()) return; // your music plays instead
 	if (rewinding && !rewind_ctx.audio) return;
 	if (!fast_forward || ff_audio) {
 		if (use_core_fps || fast_forward) {
@@ -44,6 +49,7 @@ void audio_sample_callback(int16_t left, int16_t right) {
 }
 
 size_t audio_sample_batch_callback(const int16_t *data, size_t frames) {
+	if (GameMusic_isOn()) return frames; // your music plays instead
 	if (rewinding && !rewind_ctx.audio) return frames;
 	if (!fast_forward || ff_audio) {
 		if (use_core_fps || fast_forward) {

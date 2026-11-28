@@ -83,8 +83,12 @@ void Config_syncFrontend(char* key, int value) {
 	}
 	else if (exactMatch(key,config.frontend.options[FE_OPT_AMBIENT].key)) {
 		ambient_mode = value;
-		if(ambient_mode > 0)
-			LEDS_pushProfileOverride(LIGHT_PROFILE_AMBIENT);
+		// options are synced more than once (each config read, each change),
+		// and the override stack counts every push: push only when not on top
+		if(ambient_mode > 0) {
+			if (LEDS_getProfileOverride() != LIGHT_PROFILE_AMBIENT)
+				LEDS_pushProfileOverride(LIGHT_PROFILE_AMBIENT);
+		}
 		else 
 			LEDS_popProfileOverride(LIGHT_PROFILE_AMBIENT);
 		i = FE_OPT_AMBIENT;
@@ -1353,11 +1357,14 @@ struct Config config = {
 				.labels = resample_labels,
 			},
 			[FE_OPT_AMBIENT] = {
-				.key	= "minarch_ambient", 
+				// Larry Boy Advanced: on by default. A key of its own, so the
+				// "Off" every saved game and console config holds under
+				// minarch_ambient no longer turns it back off.
+				.key	= "larry_ambient", 
 				.name	= "Ambient Mode",
 				.desc	= "Makes your leds follow on screen colors",
-				.default_value = 0,
-				.value = 0,
+				.default_value = 1,
+				.value = 1,
 				.count = 6,
 				.values = ambient_labels,
 				.labels = ambient_labels,

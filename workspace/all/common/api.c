@@ -439,6 +439,8 @@ SDL_Surface *GFX_init(int mode)
 
 	PLAT_initLid();
 	LEDS_initLeds();
+	// Larry Boy Advanced: the menus keep the last game's colors
+	if (mode == MODE_MAIN) LEDS_restoreAmbient();
 
 	RGB_WHITE = SDL_MapRGB(gfx.screen->format, TRIAD_WHITE);
 	RGB_BLACK = SDL_MapRGB(gfx.screen->format, TRIAD_BLACK);
@@ -3373,6 +3375,25 @@ void PAD_reset(void)
 	pad.just_released = BTN_NONE;
 	pad.just_repeated = BTN_NONE;
 }
+// Larry Boy Advanced: Select with the D-pad belongs to keymon (Select +
+// up/down is the brightness, Select + left/right changes the song of the music
+// playing), so while Select is held the D-pad does nothing else: menus don't
+// move and games don't see it. When the brightness was last changed that
+// way, for showing the brightness rather than the warmth Select also changes.
+static uint32_t select_brightness_at = 0;
+int PAD_selectCombos = 1;
+static void PAD_holdSelectCombos(void)
+{
+	if (!PAD_selectCombos || !(pad.is_pressed & BTN_SELECT)) return;
+	int dpad = BTN_DPAD_UP | BTN_DPAD_DOWN | BTN_DPAD_LEFT | BTN_DPAD_RIGHT;
+	if (pad.is_pressed & (BTN_DPAD_UP | BTN_DPAD_DOWN))
+		select_brightness_at = SDL_GetTicks();
+	pad.is_pressed &= ~dpad;
+	pad.just_pressed &= ~dpad;
+	pad.just_repeated &= ~dpad;
+	pad.just_released &= ~dpad;
+}
+
 FALLBACK_IMPLEMENTATION void PLAT_pollInput(void)
 {
 	// reset transient state
@@ -3810,6 +3831,8 @@ FALLBACK_IMPLEMENTATION void PLAT_pollInput(void)
 
 	if (lid.has_lid && PLAT_lidChanged(NULL))
 		pad.just_released |= BTN_SLEEP;
+
+	PAD_holdSelectCombos();
 }
 FALLBACK_IMPLEMENTATION int PLAT_shouldWake(void)
 {
@@ -4237,6 +4260,10 @@ void PWR_update(int *_dirty, int *_show_setting, PWR_callback_t before_sleep, PW
 		if (PAD_isPressed(BTN_MOD_BRIGHTNESS))
 		{
 			show_setting = 1;
+		}
+		else if (now - select_brightness_at < 700)
+		{
+			show_setting = 1; // Select + up/down: the brightness (Larry Boy Advanced)
 		}
 		else if (PAD_isPressed(BTN_MOD_COLORTEMP))
 		{
@@ -4738,6 +4765,50 @@ void LEDS_initLeds()
 
 	// once is enough to get us started, will be called by the main loop afterwards
 	LEDS_applyRules();
+}
+
+#define LEDS_LAST_PATH SHARED_USERDATA_PATH "/.leds-last"
+
+void LEDS_rememberAmbient(int on)
+{
+	if (!on) {
+		unlink(LEDS_LAST_PATH);
+		return;
+	}
+	char partial[256];
+	snprintf(partial, sizeof(partial), "%s.part", LEDS_LAST_PATH);
+	FILE* file = fopen(partial, "w");
+	if (!file) return;
+	int count = LEDS_getCount();
+	for (int i = 0; i < count; i++)
+		fprintf(file, "%d %06X\n", lightsAmbient[i].effect, (unsigned)(lightsAmbient[i].color1 & 0xFFFFFF));
+	fclose(file);
+	rename(partial, LEDS_LAST_PATH);
+}
+
+int LEDS_restoreAmbient(void)
+{
+	if (lights_initialized == 0) return 0;
+	FILE* file = fopen(LEDS_LAST_PATH, "r");
+	if (!file) return 0;
+	int count = LEDS_getCount();
+	int shown = 0;
+	char line[64];
+	for (int i = 0; i < count && fgets(line, sizeof(line), file); i++) {
+		int effect = 0;
+		unsigned color = 0;
+		// only lights ambient mode set (static color) were the game's; the
+		// rest keep their usual settings
+		if (sscanf(line, "%d %x", &effect, &color) == 2 && effect == 4) {
+			lightsAmbient[i].effect = 4;
+			lightsAmbient[i].color1 = color & 0xFFFFFF;
+			shown = 1;
+		}
+	}
+	fclose(file);
+	if (shown && LEDS_getProfileOverride() != LIGHT_PROFILE_AMBIENT)
+		LEDS_pushProfileOverride(LIGHT_PROFILE_AMBIENT);
+	return shown;
 }
 
 bool LEDS_pushProfileOverride(int profile)

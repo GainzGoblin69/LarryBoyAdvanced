@@ -1,0 +1,233 @@
+---
+name: Larry Boy Advanced
+
+# Builds the firmware for the TrimUI Brick family (tg5040: Brick, Brick Hammer,
+# Brick Pro, Smart Pro) with larry-sync, the RomM service, built in. The result
+# is one zip to unzip onto a fresh SD card. Builds of main, and builds started
+# by hand, are published as releases, so the newest is always on the Releases
+# page and the older ones stay there as a history.
+
+# yamllint disable-line rule:truthy
+on:
+  push:
+    branches:
+      - main
+  pull_request: {}
+  workflow_dispatch:
+    inputs:
+      larry_sync_ref:
+        description: "larry-sync branch, tag or commit to build in"
+        required: false
+        default: ""
+      publish:
+        description: "Publish this build as a release"
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: larry-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PLATFORM: tg5040
+  LARRY_SYNC_REPO: GainzGoblin69/larry-sync
+  # The headless service is on this branch until its pull request is merged;
+  # then this becomes main.
+  LARRY_SYNC_REF: ${{ inputs.larry_sync_ref || 'larry-sync-service' }}
+
+jobs:
+  core-matrix:
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      cores: ${{ steps.cores.outputs.cores }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: List cores
+        id: cores
+        run: |
+          echo "cores=$(make cores-json)" >> "$GITHUB_OUTPUT"
+
+  build-core:
+    needs: core-matrix
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: true
+      matrix:
+        core: ${{ fromJson(needs.core-matrix.outputs.cores) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      # Cores take most of the build time and almost never change here, so
+      # each is kept until its recipe or patches do.
+      - name: Restore ${{ matrix.core }}
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: workspace/${{ env.PLATFORM }}/cores/output
+          key: core-${{ env.PLATFORM }}-${{ matrix.core }}-${{ hashFiles(format('workspace/{0}/cores/makefile', env.PLATFORM), 'workspace/all/cores/**') }}
+
+      - name: Setup
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: make setup
+
+      - name: Build ${{ matrix.core }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: make build-core CORE=${{ matrix.core }}
+
+      - name: Upload core
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: core-${{ env.PLATFORM }}-${{ matrix.core }}
+          path: workspace/${{ env.PLATFORM }}/cores/output/
+          if-no-files-found: error
+
+  larry-sync:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout larry-sync
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: ${{ env.LARRY_SYNC_REPO }}
+          ref: ${{ env.LARRY_SYNC_REF }}
+
+      # The same image grout's device builds use, so the binary links against
+      # the libraries NextUI on the Brick already has.
+      - name: Build larry-sync
+        run: |
+          VERSION="$(jq -r '.version // "dev"' pak.json)-larry"
+          COMMIT="$(git rev-parse --short HEAD)"
+          mkdir -p dist/lib
+          docker run --rm \
+            -v "$PWD":/build -w /build \
+            -e GOWORK=off -e GOFLAGS=-buildvcs=false \
+            ghcr.io/brandonkowalski/quasimodo:latest \
+            sh -c "go build \
+              -ldflags \"-X 'grout/version.Version=$VERSION' -X 'grout/version.GitCommit=$COMMIT'\" \
+              -o dist/larry-sync ./cmd/larry-sync \
+              && cp -L /usr/lib/aarch64-linux-gnu/libSDL2_gfx-1.0.so.0 dist/lib/"
+          sudo chown -R "$(id -u):$(id -g)" dist
+          chmod a+x dist/larry-sync
+          file dist/larry-sync
+          echo "Shared libraries it needs:"
+          readelf -d dist/larry-sync | grep NEEDED
+
+      - name: Upload larry-sync
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: larry-sync-${{ env.PLATFORM }}
+          path: dist/
+          if-no-files-found: error
+
+  firmware:
+    needs:
+      - build-core
+      - larry-sync
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zipmerge
+
+      - name: Setup
+        run: make setup
+
+      - name: Download cores
+        uses: actions/download-artifact@v8.0.2
+        with:
+          path: workspace/${{ env.PLATFORM }}/cores/output/
+          pattern: core-${{ env.PLATFORM }}-*
+          merge-multiple: true
+
+      - name: Download larry-sync
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: larry-sync-${{ env.PLATFORM }}
+          path: workspace/${{ env.PLATFORM }}/larry/
+
+      - name: Build
+        run: |
+          chmod a+x workspace/$PLATFORM/larry/larry-sync
+          make $PLATFORM
+
+      - name: Check larry-sync is in the build
+        run: |
+          test -x build/SYSTEM/$PLATFORM/bin/larry-sync
+          test -x build/SYSTEM/$PLATFORM/bin/larry-sync.sh
+          test -f build/SYSTEM/$PLATFORM/lib/larry/libSDL2_gfx-1.0.so.0
+
+      - name: Package
+        run: |
+          make special
+          make package
+
+      - name: Check the zip
+        run: |
+          ZIP=$(ls releases/*-all.zip)
+          echo "Built $ZIP"
+          unzip -l "$ZIP" | grep -E 'MinUI.zip|romm-server.txt|Roms/' | head -20
+          mkdir -p /tmp/payload && unzip -o -q "$ZIP" MinUI.zip -d /tmp/payload
+          unzip -l /tmp/payload/MinUI.zip | grep -E 'larry|nextui.elf'
+          unzip -p /tmp/payload/MinUI.zip .system/larry-repo.txt
+          echo "RELEASE_NAME=$(basename "$ZIP" -all.zip)" >> "$GITHUB_ENV"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ env.RELEASE_NAME }}-tg5040
+          path: releases/${{ env.RELEASE_NAME }}-all.zip
+          if-no-files-found: error
+
+  release:
+    needs: firmware
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    steps:
+      - name: Download firmware
+        uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: LarryBoyAdvanced-*
+          path: release/
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          ZIP=$(ls release/*-all.zip)
+          NAME=$(basename "$ZIP" -all.zip)
+          # The build name holds only the date and branch, so two builds in a
+          # day would share it; the commit keeps each release's tag unique.
+          TAG="build-${NAME#LarryBoyAdvanced-}-${GITHUB_SHA::7}"
+          cat > notes.md <<NOTES
+          Larry Boy Advanced for the TrimUI Brick family (Brick, Brick Hammer, Brick Pro, Smart Pro).
+
+          Built from \`$BRANCH\` at ${GITHUB_SHA::7}.
+
+          **To install:** format a microSD card as FAT32, unzip the \`-all.zip\` onto it, add your RomM server's address to \`romm-server.txt\`, then put the card in and power on.
+
+          **To update:** choose Check for Updates on the Hammer, or copy \`MinUI.zip\` to the top of the card.
+          NOTES
+          # MinUI.zip on its own is what Check for Updates downloads
+          unzip -o -q "$ZIP" MinUI.zip -d release/payload
+          gh release create "$TAG" "$ZIP" release/payload/MinUI.zip \
+            --target "$GITHUB_SHA" \
+            --title "Larry Boy Advanced ${NAME#LarryBoyAdvanced-} (${GITHUB_SHA::7})" \
+            --notes-file notes.md \
+            --latest

@@ -17,6 +17,8 @@
 #include "ma_internal.h"
 #include "ma_cheats.h"
 #include "ma_saves.h"
+#include "ma_romm.h"
+#include "ma_music.h"
 #include "ma_game.h"
 #include "ma_config.h"
 #include "ma_video.h"
@@ -113,13 +115,14 @@ void MSG_quit(void) {
 
 ///////////////////////////////////////
 
-#define MENU_ITEM_COUNT 5
+#define MENU_ITEM_COUNT 6
 #define MENU_SLOT_COUNT 8
 
 enum {
 	ITEM_CONT,
 	ITEM_SAVE,
 	ITEM_LOAD,
+	ITEM_ROMM, // Larry Boy Advanced: the game's saves on RomM
 	ITEM_OPTS,
 	ITEM_QUIT,
 };
@@ -161,6 +164,7 @@ static struct {
 		[ITEM_CONT] = "Continue",
 		[ITEM_SAVE] = "Save",
 		[ITEM_LOAD] = "Load",
+		[ITEM_ROMM] = "RomM Saves",
 		[ITEM_OPTS] = "Options",
 		[ITEM_QUIT] = "Quit",
 	}
@@ -222,6 +226,7 @@ void Menu_quit(void) {
 	SDL_FreeSurface(menu.overlay);
 }
 void Menu_beforeSleep() {
+	GameMusic_beforeSleep();
 	SRAM_write();
 	RTC_write();
 	State_autosave();
@@ -230,6 +235,7 @@ void Menu_beforeSleep() {
 void Menu_afterSleep() {
 	unlink(AUTO_RESUME_PATH);
 	setOverclock(overclock);
+	GameMusic_afterSleep();
 }
 
 
@@ -1819,6 +1825,7 @@ void Menu_loop(void) {
 		
 	int selected = 0; // resets every launch
 	Menu_initState();
+	RommSaves_reset();
 	
 	int status = STATUS_CONT; // TODO: no longer used?
 	int show_setting = 0;
@@ -1835,15 +1842,39 @@ void Menu_loop(void) {
 		uint32_t now = SDL_GetTicks();
 
 		PAD_poll();
+
+		// Larry Boy Advanced: RomM Saves works in the background; take what
+		// it has finished.
+		if (RommSaves_poll()) dirty = 1;
+		char romm_loaded[256];
+		if (RommSaves_takeLoaded(romm_loaded, sizeof(romm_loaded))) {
+			// The save on the card is now the one picked: restart the game
+			// on it. Reading it after the reset leaves the reset nothing to
+			// clear, and the game reads it as it boots.
+			core.reset();
+			SRAM_read();
+			Notification_push(NOTIFICATION_LOAD_STATE, romm_loaded, NULL);
+			status = STATUS_RESET;
+			show_menu = 0;
+			break;
+		}
+		// While a save is being put in place nothing may close the menu, and
+		// the device may not sleep: either would have the game write its old
+		// save over the new one. It takes a few seconds; buttons wait.
+		if (RommSaves_busy()) goto draw;
 		
 		if (PAD_justPressed(BTN_UP)) {
+			if (selected==ITEM_ROMM) RommSaves_back(); // leaving drops a confirmation
 			selected -= 1;
 			if (selected<0) selected += MENU_ITEM_COUNT;
+			if (selected==ITEM_ROMM) RommSaves_open(game.path);
 			dirty = 1;
 		}
 		else if (PAD_justPressed(BTN_DOWN)) {
+			if (selected==ITEM_ROMM) RommSaves_back();
 			selected += 1;
 			if (selected>=MENU_ITEM_COUNT) selected -= MENU_ITEM_COUNT;
+			if (selected==ITEM_ROMM) RommSaves_open(game.path);
 			dirty = 1;
 		}
 		else if (PAD_justPressed(BTN_LEFT)) {
@@ -1856,6 +1887,10 @@ void Menu_loop(void) {
 			else if (selected==ITEM_SAVE || selected==ITEM_LOAD) {
 				menu.slot -= 1;
 				if (menu.slot<0) menu.slot += MENU_SLOT_COUNT;
+				dirty = 1;
+			}
+			else if (selected==ITEM_ROMM) {
+				RommSaves_move(-1);
 				dirty = 1;
 			}
 		}
@@ -1871,13 +1906,25 @@ void Menu_loop(void) {
 				if (menu.slot>=MENU_SLOT_COUNT) menu.slot -= MENU_SLOT_COUNT;
 				dirty = 1;
 			}
+			else if (selected==ITEM_ROMM) {
+				RommSaves_move(1);
+				dirty = 1;
+			}
 		}
 		
 		if (dirty && (selected==ITEM_SAVE || selected==ITEM_LOAD)) {
 			Menu_updateState();
 		}
 		
-		if (PAD_justPressed(BTN_B) || (BTN_WAKE!=BTN_MENU && PAD_tappedMenu(now))) {
+		// Larry Boy Advanced: X goes round your music, whichever item is selected
+		if (PAD_justPressed(BTN_X) && GameMusic_available()) {
+			GameMusic_cycle();
+			dirty = 1;
+		}
+		if (PAD_justPressed(BTN_B) && selected==ITEM_ROMM && RommSaves_back()) {
+			dirty = 1; // backed out of the confirmation, not the menu
+		}
+		else if (PAD_justPressed(BTN_B) || (BTN_WAKE!=BTN_MENU && PAD_tappedMenu(now))) {
 			status = STATUS_CONT;
 			show_menu = 0;
 		}
@@ -1907,6 +1954,10 @@ void Menu_loop(void) {
 					show_menu = 0;
 				}
 				break;
+				case ITEM_ROMM:
+					RommSaves_accept();
+					dirty = 1;
+				break;
 				case ITEM_OPTS: {
 					if (simple_mode) {
 						core.reset();
@@ -1932,6 +1983,9 @@ void Menu_loop(void) {
 				}
 				break;
 				case ITEM_QUIT:
+					// Larry Boy Advanced: a picture of where the game was left,
+					// sent to RomM with the save
+					RommSaves_keepShot(menu.bitmap, core.tag, game.alt_name);
 					status = STATUS_QUIT;
 					show_menu = 0;
 					quit = 1; // TODO: tmp?
@@ -1941,6 +1995,7 @@ void Menu_loop(void) {
 		}
 
 		PWR_update(&dirty, &show_setting, Menu_beforeSleep, Menu_afterSleep);
+draw:
 		if(dirty) {
 			GFX_clear(screen);
 
@@ -1976,7 +2031,13 @@ void Menu_loop(void) {
 			
 			if (show_setting && !GetHDMI()) GFX_blitHardwareHints(screen, show_setting);
 			else GFX_blitButtonGroup((char*[]){ BTN_SLEEP==BTN_POWER?"POWER":"MENU","SLEEP", NULL }, 0, screen, 0);
-			GFX_blitButtonGroup((char*[]){ "B","BACK", "A","OKAY", NULL }, 1, screen, 1);
+			if (selected==ITEM_ROMM) {
+				char** hints = RommSaves_hints();
+				if (hints[0]) GFX_blitButtonGroup(hints, hints[2] ? 1 : 0, screen, 1);
+			}
+			else if (GameMusic_available())
+				GFX_blitButtonGroup((char*[]){ "X",(char*)GameMusic_label(), "B","BACK", "A","OKAY", NULL }, 2, screen, 1);
+			else GFX_blitButtonGroup((char*[]){ "B","BACK", "A","OKAY", NULL }, 1, screen, 1);
 			
 			// list
 			oy = (((DEVICE_HEIGHT / FIXED_SCALE) - PADDING * 2) - (MENU_ITEM_COUNT * PILL_SIZE)) / 2;
@@ -2072,6 +2133,16 @@ void Menu_loop(void) {
 					else GFX_blitAsset(ASSET_DOT, NULL, screen, &(SDL_Rect){ox+SCALE1(i*15)+4,oy+SCALE1(2)});
 				}
 			}
+			// Larry Boy Advanced: the game's saves on RomM, in the same window
+			else if (selected==ITEM_ROMM) {
+				int radius = SCALE1(4);
+				int pw = DEVICE_WIDTH / 2 + radius * 2;
+				int ph = DEVICE_HEIGHT / 2 + radius * 2 + SCALE1(6 + 4);
+				int px = DEVICE_WIDTH - pw - SCALE1(PADDING);
+				int py = (DEVICE_HEIGHT - ph) / 2;
+				GFX_blitRect(ASSET_STATE_BG, screen, &(SDL_Rect){ px, py, pw, ph });
+				RommSaves_draw(screen, (SDL_Rect){ px + radius, py + radius, pw - radius * 2, ph - radius * 2 });
+			}
 			GFX_flip(screen);
 			dirty=0;
 		} else {
@@ -2083,6 +2154,7 @@ void Menu_loop(void) {
 	
 	SDL_FreeSurface(preview);
 	if(menu.bitmap) SDL_FreeSurface(menu.bitmap);
+	RommSaves_reset(); // stops a list still loading
 	PAD_reset();
 
 	GFX_clearAll();

@@ -1,3 +1,62 @@
+# Larry Boy Advanced
+
+NextUI with your [RomM](https://github.com/rommapp/romm) library built in, for
+the TrimUI Brick family (Brick, Brick Hammer, Brick Pro, Smart Pro).
+
+Every game on your RomM server shows up in the console lists, with its cover
+art, whether or not it is on the SD card. Games that are not downloaded yet
+are dimmed; pick one and it downloads, along with any BIOS files it needs.
+Your newest save comes down before you play and goes back up when you stop.
+
+## Installing
+
+1. Download the newest `LarryBoyAdvanced-…-all.zip` from
+   [Releases](https://github.com/GainzGoblin69/LarryBoyAdvanced/releases/latest).
+2. Format a spare microSD card as FAT32 and unzip the build onto it.
+3. Open `romm-server.txt` at the top of the card and add your RomM server's
+   address, for example `http://192.168.1.20:8080`.
+4. Put the card in the device and turn it on. NextUI installs itself, then
+   Larry Boy Advanced walks you through linking RomM.
+
+Two more files at the top of the card are optional:
+
+- `wifi.txt`: your Wi-Fi networks, each a `network:` line and a `password:`
+  line. The device switches Wi-Fi on, saves them in its own memory, and joins
+  whichever is in range.
+- `retroachievements.txt`: your RetroAchievements `username:` and
+  `password:`. The device signs in once Wi-Fi is connected.
+
+Each is applied whenever you change it. Wi-Fi can also be set up in
+**Tools > Settings > Network**. If it is not connected on first boot, choose
+LATER, connect, then pick **Sync RomM Library** at the bottom of the main
+menu.
+
+To update an installed card, copy only `MinUI.zip` from a new build to the
+top of the card: unzipping the whole build would replace these files with
+blank templates.
+
+## Using it
+
+- **A** on a dimmed game downloads it, then starts it. **B** cancels.
+- **Y** in a console list switches between A to Z and ready-to-play first.
+- **Sync RomM Library** on the main menu picks up games added to RomM.
+
+## How it is built
+
+- The launcher is NextUI's, with library lists, the download and setup
+  screens added (`workspace/all/nextui/larry.c` and `nextui.c`).
+- The RomM work is done by `larry-sync`, a screenless build of
+  [grout](https://github.com/rommapp/grout) from
+  [larry-sync](https://github.com/GainzGoblin69/larry-sync).
+- `.github/workflows/larry.yaml` builds both and packages the zip.
+
+Larry Boy Advanced is a personal, non-commercial fork. NextUI is licensed
+under PolyForm Noncommercial 1.0.0 (see LICENSE and NOTICE); grout is MIT.
+QR codes are drawn with Project Nayuki's QR Code generator (MIT), vendored
+in `workspace/all/nextui/qrcodegen.c`.
+
+---
+
 <div align="center">
 
   <img width=128px src="github/logo_outline.png">
