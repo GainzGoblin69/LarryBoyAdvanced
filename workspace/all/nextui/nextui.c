@@ -2939,15 +2939,60 @@ static void Larry_padDraw(const char* state, int has_host) {
 	if (!strcmp(state, "connected"))
 		body = "Connected. Play on the TV.\n\nTap MENU for the TV's game menu. Hold MENU to stop. The screen turns off in a moment to save battery.";
 	else if (!strcmp(state, "waiting") && has_host)
-		body = "Connecting to your TV...\n\nIf it doesn't connect, pair again: on the TV, Settings > Remotes & Accessories > Pair accessory, then choose Larry Boy Advanced.";
+		body = "Connecting to your TV...\n\nIf it doesn't connect: hold MENU to stop, open Controller Mode again and choose New Device.";
 	else if (!strcmp(state, "waiting"))
-		body = "On the TV: Settings > Remotes & Accessories > Pair accessory, then choose Larry Boy Advanced.";
+		body = "Ready to pair. On the TV: Settings > Remotes & Accessories > Pair accessory, then choose Larry Boy Advanced.";
 	else
 		body = "Starting Bluetooth...";
 	Larry_draw(LARRY_PAD_NAME, body, -1, NULL, (char*[]){ "MENU", "HOLD TO STOP", NULL });
 }
 
+// The TV last played on, from larry-sync's note: its name, or "your TV".
+// Returns 0 if there is none.
+static int Larry_padLastHost(char* name, size_t size) {
+	FILE* file = fopen(LARRY_PAD_HOST, "r");
+	if (!file) return 0;
+	char line[256] = "";
+	int found = fgets(line, sizeof(line), file) != NULL;
+	fclose(file);
+	line[strcspn(line, "\r\n")] = '\0';
+	if (!found || !line[0]) return 0;
+	char* tab = strchr(line, '\t');
+	snprintf(name, size, "%s", tab && tab[1] ? tab + 1 : "your TV");
+	return 1;
+}
+
+// Connect to the last TV (A), pair a new device (X), or not (B).
+// Returns 'A', 'X' or 'B'.
+static int Larry_padChoose(const char* host) {
+	char body[LARRY_TEXT];
+	snprintf(body, sizeof(body),
+		"Connect to %s, or pair a new device?\n\nA new device doesn't connect to %s, even when it's in range.", host, host);
+	Larry_draw(LARRY_PAD_NAME, body, -1, NULL, (char*[]){ "B", "BACK", "X", "NEW DEVICE", "A", "CONNECT", NULL });
+	PAD_reset();
+	int answer = 0;
+	while (!answer) {
+		GFX_startFrame();
+		PAD_poll();
+		if (PAD_justPressed(BTN_A)) answer = 'A';
+		else if (PAD_justPressed(BTN_X)) answer = 'X';
+		else if (PAD_justPressed(BTN_B)) answer = 'B';
+		GFX_sync();
+	}
+	Larry_afterModal();
+	return answer;
+}
+
 static void Larry_controllerMode(void) {
+	// with a TV played on before: that one, or a new device
+	char host[128];
+	int pair_new = 1;
+	if (Larry_padLastHost(host, sizeof(host))) {
+		int choice = Larry_padChoose(host);
+		if (choice == 'B') return;
+		pair_new = choice == 'X';
+	}
+
 	Larry_draw(LARRY_PAD_NAME, "Starting Bluetooth...", -1, NULL, NULL);
 	Larry_musicPause(500); // the menus' music has no place on a controller
 	if (system("sh " SYSTEM_PATH "/bin/larry-pad-bt.sh start") != 0) {
@@ -2965,11 +3010,12 @@ static void Larry_controllerMode(void) {
 	mkfifo(LARRY_PAD_FIFO, 0600);
 	int pipe_fd = open(LARRY_PAD_FIFO, O_RDWR | O_NONBLOCK);
 
-	const char* args[] = { "pad", "serve", NULL };
-	LarryJob* job = LarryJob_start(args);
+	const char* args_last[] = { "pad", "serve", NULL };
+	const char* args_new[] = { "pad", "serve", "--new", NULL };
+	LarryJob* job = LarryJob_start(pair_new ? args_new : args_last);
 	static LarryJob now; // large: kept off the stack
 	char state[16] = "";
-	int has_host = exists(LARRY_PAD_HOST);
+	int has_host = !pair_new; // connecting to the last TV, not pairing
 	int failed = 0;
 	uint16_t sent_buttons = 0xFFFF;
 	uint8_t sent_hat = 0xFF;
@@ -3015,6 +3061,7 @@ static void Larry_controllerMode(void) {
 			if (strcmp(now.pad_state, state)) {
 				snprintf(state, sizeof(state), "%s", now.pad_state);
 				has_host = has_host || now.pad_host[0];
+				if (pair_new && now.pad_host[0]) pair_new = 0;
 				if (!backlight) {
 					PLAT_enableBacklight(1);
 					backlight = 1;

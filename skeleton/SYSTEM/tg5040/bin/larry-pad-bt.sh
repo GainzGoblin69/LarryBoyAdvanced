@@ -61,6 +61,9 @@ CONF
 	# lowest latency: no sniff mode, in which the radio only wakes every so
 	# often to save power. The TV asks for it; the Hammer now says no.
 	hciconfig hci0 lp RSWITCH >> "$LOG" 2>&1
+	# lead the link when the TV connects, so presses go out as they happen
+	# rather than when the TV next asks
+	hciconfig hci0 lm accept,master >> "$LOG" 2>&1
 	log "link policy: $(hciconfig hci0 lp 2>&1 | tail -1)"
 	running bluetoothd && log "bluetoothd running" || { log "bluetoothd did not start"; exit 1; }
 	;;
@@ -76,6 +79,7 @@ stop)
 	fi
 	# power saving back for headphones
 	hciconfig hci0 lp RSWITCH,SNIFF >> "$LOG" 2>&1
+	hciconfig hci0 lm accept >> "$LOG" 2>&1
 	rm -f "$WAS_ON" "$CONF" "$STOPPING"
 	log "Bluetooth back as it was"
 	;;
