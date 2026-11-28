@@ -7,6 +7,7 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <libgen.h>  // For dirname()
 #include "defines.h"
 #include "api.h"
