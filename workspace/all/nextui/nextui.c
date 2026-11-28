@@ -2491,7 +2491,16 @@ static void Larry_draw(const char* title, const char* body, int percent, const c
 		}
 	}
 
-	if (hints) GFX_blitButtonGroup(hints, 0, screen, 1);
+	if (hints) {
+		// a group shows at most two buttons: with three, the first (BACK)
+		// goes on the left and the other two on the right
+		if (hints[0] && hints[2] && hints[4]) {
+			char* left[] = { hints[0], hints[1], NULL };
+			GFX_blitButtonGroup(left, 0, screen, 0);
+			GFX_blitButtonGroup(hints + 2, 1, screen, 1);
+		}
+		else GFX_blitButtonGroup(hints, 0, screen, 1);
+	}
 	GFX_flip(screen);
 }
 
