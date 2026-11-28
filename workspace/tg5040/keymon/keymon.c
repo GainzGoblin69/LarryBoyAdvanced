@@ -269,8 +269,9 @@ int main (int argc, char *argv[]) {
 			else down_repeat_at += 100;
 		}
 		
-		// Larry Boy Advanced: Select + D-pad. menu2_pressed is Select.
-		if (menu2_pressed && !menu_pressed) {
+		// Larry Boy Advanced: Select + D-pad. menu2_pressed is Select. Not in
+		// controller mode, where Select and the D-pad are the TV's.
+		if (menu2_pressed && !menu_pressed && access("/tmp/larry-pad.active", F_OK) != 0) {
 			if (dpad_up_just_pressed || (dpad_up_pressed && now>=dpad_up_repeat_at)) {
 				val = GetBrightness();
 				if (val<BRIGHTNESS_MAX) SetBrightness(++val);

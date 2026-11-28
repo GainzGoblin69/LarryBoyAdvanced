@@ -1078,6 +1078,8 @@ static void handleLine(LarryJob* job, char* line) {
 		if (strcmp(fields[1], "rom_path") == 0) copyText(job->rom_path, sizeof(job->rom_path), fields[2]);
 		else if (strcmp(fields[1], "pair_url") == 0) copyText(job->pair_url, sizeof(job->pair_url), fields[2]);
 		else if (strcmp(fields[1], "url") == 0) copyText(job->files_url, sizeof(job->files_url), fields[2]);
+		else if (strcmp(fields[1], "pad") == 0) copyText(job->pad_state, sizeof(job->pad_state), fields[2]);
+		else if (strcmp(fields[1], "host") == 0) copyText(job->pad_host, sizeof(job->pad_host), fields[2]);
 		else if (strcmp(fields[1], "saves_downloaded") == 0) job->saves_downloaded = atoi(fields[2]);
 		else if (strcmp(fields[1], "saves_conflicts") == 0) job->saves_conflicts = atoi(fields[2]);
 		else if (strcmp(fields[1], "saves_errors") == 0) job->saves_errors = atoi(fields[2]);

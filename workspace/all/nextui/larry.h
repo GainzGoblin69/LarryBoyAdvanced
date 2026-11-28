@@ -41,6 +41,12 @@
 // the main-menu item that updates the firmware from its GitHub releases
 #define LARRY_UPDATE_PATH SDCARD_PATH "/.larry-update"
 #define LARRY_UPDATE_NAME "Check for Updates"
+// the main-menu item that makes the device a Bluetooth controller for a TV
+#define LARRY_PAD_PATH SDCARD_PATH "/.larry-pad"
+#define LARRY_PAD_NAME "Controller Mode"
+#define LARRY_PAD_FIFO "/tmp/larry-pad.fifo"
+#define LARRY_PAD_ACTIVE "/tmp/larry-pad.active"
+#define LARRY_PAD_HOST LARRY_HOME "/pad-host"
 // the main-menu item that opens the card to a phone over Wi-Fi
 #define LARRY_FILES_PATH SDCARD_PATH "/.larry-files"
 #define LARRY_FILES_NAME "File Access"
@@ -225,6 +231,8 @@ typedef struct LarryJob {
 	char rom_path[LARRY_PATH];
 	char pair_url[LARRY_PATH];
 	char files_url[LARRY_PATH]; // File Access: the page's address, with its key
+	char pad_state[16];         // controller mode: waiting, connected
+	char pad_host[32];          // the TV's Bluetooth address
 	// what the save check found: -1 when it did not report
 	int saves_downloaded;
 	int saves_conflicts;

@@ -3381,9 +3381,10 @@ void PAD_reset(void)
 // move and games don't see it. When the brightness was last changed that
 // way, for showing the brightness rather than the warmth Select also changes.
 static uint32_t select_brightness_at = 0;
+int PAD_selectCombos = 1;
 static void PAD_holdSelectCombos(void)
 {
-	if (!(pad.is_pressed & BTN_SELECT)) return;
+	if (!PAD_selectCombos || !(pad.is_pressed & BTN_SELECT)) return;
 	int dpad = BTN_DPAD_UP | BTN_DPAD_DOWN | BTN_DPAD_LEFT | BTN_DPAD_RIGHT;
 	if (pad.is_pressed & (BTN_DPAD_UP | BTN_DPAD_DOWN))
 		select_brightness_at = SDL_GetTicks();

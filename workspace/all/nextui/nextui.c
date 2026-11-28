@@ -904,6 +904,7 @@ static Array* getRoot(void) {
 		Array_push(root, Entry_newNamed(LARRY_SYNC_PATH, ENTRY_PAK, LARRY_SYNC_NAME));
 		Array_push(root, Entry_newNamed(LARRY_UPDATE_PATH, ENTRY_PAK, LARRY_UPDATE_NAME));
 		Array_push(root, Entry_newNamed(LARRY_FILES_PATH, ENTRY_PAK, LARRY_FILES_NAME));
+		Array_push(root, Entry_newNamed(LARRY_PAD_PATH, ENTRY_PAK, LARRY_PAD_NAME));
 		// menu music, once music.txt sets some up
 		int game_music, johnny_music;
 		Larry_readMusicFile(LARRY_MUSIC_FILE, &game_music, &johnny_music);
@@ -1657,6 +1658,7 @@ static int Larry_prepareGame(Entry* entry);
 static void Larry_syncLibrary(void);
 static void Larry_checkUpdate(void);
 static void Larry_fileAccess(void);
+static void Larry_controllerMode(void);
 static void Larry_applySetupFiles(void);
 
 static void Entry_open(Entry* self) {
@@ -1666,6 +1668,10 @@ static void Entry_open(Entry* self) {
 	}
 	if (self->type==ENTRY_PAK && exactMatch(self->path, LARRY_UPDATE_PATH)) {
 		Larry_checkUpdate();
+		return;
+	}
+	if (self->type==ENTRY_PAK && exactMatch(self->path, LARRY_PAD_PATH)) {
+		Larry_controllerMode();
 		return;
 	}
 	if (self->type==ENTRY_PAK && exactMatch(self->path, LARRY_FILES_PATH)) {
@@ -2887,6 +2893,162 @@ static void Larry_fileAccess(void) {
 			if (top->start < 0) top->start = 0;
 		}
 	}
+}
+
+// Controller Mode: the device as a Bluetooth gamepad for a TV. Bluetooth is
+// restarted as a gamepad, larry-sync pairs and talks to the TV, and this
+// sends it the buttons the moment they change. Buttons go by position, as
+// Android and the TV app expect: the bottom face button is the TV's A.
+// MENU tapped is the TV's game menu (Mode); held, it stops.
+
+// The buttons as the gamepad's HID bits (see larry-sync's padReportDescriptor).
+static uint16_t Larry_padButtons(uint32_t pressed, int mode) {
+	uint16_t bits = 0;
+	if (pressed & BTN_B) bits |= 1 << 0;       // A: bottom
+	if (pressed & BTN_A) bits |= 1 << 1;       // B: right
+	if (pressed & BTN_Y) bits |= 1 << 3;       // X: left
+	if (pressed & BTN_X) bits |= 1 << 4;       // Y: top
+	if (pressed & BTN_L1) bits |= 1 << 6;
+	if (pressed & BTN_R1) bits |= 1 << 7;
+	if (pressed & BTN_L2) bits |= 1 << 8;
+	if (pressed & BTN_R2) bits |= 1 << 9;
+	if (pressed & BTN_SELECT) bits |= 1 << 10;
+	if (pressed & BTN_START) bits |= 1 << 11;
+	if (mode) bits |= 1 << 12;
+	if (pressed & BTN_L3) bits |= 1 << 13;
+	if (pressed & BTN_R3) bits |= 1 << 14;
+	return bits;
+}
+
+// The D-pad as a hat: 0 up, clockwise to 7, 8 for none.
+static uint8_t Larry_padHat(uint32_t pressed) {
+	int up = (pressed & BTN_DPAD_UP) != 0, down = (pressed & BTN_DPAD_DOWN) != 0;
+	int left = (pressed & BTN_DPAD_LEFT) != 0, right = (pressed & BTN_DPAD_RIGHT) != 0;
+	if (up && down) up = down = 0;
+	if (left && right) left = right = 0;
+	if (up) return right ? 1 : left ? 7 : 0;
+	if (down) return right ? 3 : left ? 5 : 4;
+	if (right) return 2;
+	if (left) return 6;
+	return 8;
+}
+
+static void Larry_padDraw(const char* state, int has_host) {
+	const char* body;
+	if (!strcmp(state, "connected"))
+		body = "Connected. Play on the TV.\n\nTap MENU for the TV's game menu. Hold MENU to stop. The screen turns off in a moment to save battery.";
+	else if (!strcmp(state, "waiting") && has_host)
+		body = "Connecting to your TV...\n\nIf it doesn't connect, pair again: on the TV, Settings > Remotes & Accessories > Pair accessory, then choose Larry Boy Advanced.";
+	else if (!strcmp(state, "waiting"))
+		body = "On the TV: Settings > Remotes & Accessories > Pair accessory, then choose Larry Boy Advanced.";
+	else
+		body = "Starting Bluetooth...";
+	Larry_draw(LARRY_PAD_NAME, body, -1, NULL, (char*[]){ "MENU", "HOLD TO STOP", NULL });
+}
+
+static void Larry_controllerMode(void) {
+	Larry_draw(LARRY_PAD_NAME, "Starting Bluetooth...", -1, NULL, NULL);
+	Larry_musicPause(500); // the menus' music has no place on a controller
+	if (system("sh " SYSTEM_PATH "/bin/larry-pad-bt.sh start") != 0) {
+		system("sh " SYSTEM_PATH "/bin/larry-pad-bt.sh stop");
+		Larry_tell(LARRY_PAD_NAME, "Bluetooth would not start as a controller. The log is pad.log in .userdata/shared/larry/logs.");
+		Larry_musicPlay();
+		return;
+	}
+
+	// Select and the D-pad are the TV's now, not brightness and songs
+	PAD_selectCombos = 0;
+	FILE* active = fopen(LARRY_PAD_ACTIVE, "w");
+	if (active) fclose(active);
+	unlink(LARRY_PAD_FIFO);
+	mkfifo(LARRY_PAD_FIFO, 0600);
+	int pipe_fd = open(LARRY_PAD_FIFO, O_RDWR | O_NONBLOCK);
+
+	const char* args[] = { "pad", "serve", NULL };
+	LarryJob* job = LarryJob_start(args);
+	static LarryJob now; // large: kept off the stack
+	char state[16] = "";
+	int has_host = exists(LARRY_PAD_HOST);
+	int failed = 0;
+	uint16_t sent_buttons = 0xFFFF;
+	uint8_t sent_hat = 0xFF;
+	uint32_t menu_down_at = 0;
+	uint32_t mode_until = 0;       // a MENU tap, held on the TV briefly
+	uint32_t connected_at = 0;
+	int backlight = 1;
+	uint32_t last_check = 0;
+
+	Larry_padDraw(state, has_host);
+	PAD_reset();
+	while (job) {
+		PAD_poll();
+		uint32_t ticks = SDL_GetTicks();
+		uint32_t pressed = pad.is_pressed;
+
+		// MENU: a tap is the TV's Mode button, a hold stops
+		if (PAD_justPressed(BTN_MENU)) menu_down_at = ticks;
+		if (menu_down_at && (pressed & BTN_MENU) && ticks - menu_down_at >= 1200) break;
+		if (menu_down_at && !(pressed & BTN_MENU)) {
+			if (ticks - menu_down_at < 600) mode_until = ticks + 100;
+			menu_down_at = 0;
+		}
+
+		uint16_t buttons = Larry_padButtons(pressed, ticks < mode_until);
+		uint8_t hat = Larry_padHat(pressed);
+		if ((buttons != sent_buttons || hat != sent_hat) && pipe_fd >= 0) {
+			uint8_t record[3] = { buttons & 0xFF, buttons >> 8, hat };
+			if (write(pipe_fd, record, sizeof(record)) == sizeof(record)) {
+				sent_buttons = buttons;
+				sent_hat = hat;
+			}
+		}
+
+		// what larry-sync says, a few times a second
+		if (ticks - last_check >= 150) {
+			last_check = ticks;
+			LarryJob_snapshot(job, &now);
+			if (now.finished) {
+				failed = 1;
+				break;
+			}
+			if (strcmp(now.pad_state, state)) {
+				snprintf(state, sizeof(state), "%s", now.pad_state);
+				has_host = has_host || now.pad_host[0];
+				if (!backlight) {
+					PLAT_enableBacklight(1);
+					backlight = 1;
+				}
+				connected_at = !strcmp(state, "connected") ? ticks : 0;
+				Larry_padDraw(state, has_host);
+			}
+			// the TV is what is looked at: the screen goes off to save battery
+			if (backlight && connected_at && ticks - connected_at >= 8000) {
+				PLAT_enableBacklight(0);
+				backlight = 0;
+			}
+		}
+		SDL_Delay(2);
+	}
+
+	if (!backlight) PLAT_enableBacklight(1);
+	Larry_draw(LARRY_PAD_NAME, "Turning Bluetooth back to how it was...", -1, NULL, NULL);
+	if (job) {
+		LarryJob_snapshot(job, &now);
+		LarryJob_cancel(job);
+		LarryJob_free(job);
+	}
+	if (pipe_fd >= 0) close(pipe_fd);
+	unlink(LARRY_PAD_FIFO);
+	unlink(LARRY_PAD_ACTIVE);
+	PAD_selectCombos = 1;
+	system("sh " SYSTEM_PATH "/bin/larry-pad-bt.sh stop");
+	Larry_afterModal();
+	if (failed || !job) {
+		char why[LARRY_TEXT + 96];
+		snprintf(why, sizeof(why), "Controller Mode stopped: %s", job && now.error[0] ? now.error : "it could not start.");
+		Larry_tell(LARRY_PAD_NAME, why);
+	}
+	Larry_musicPlay();
 }
 
 // Check for Updates: asks GitHub for the newest release, and if it is a

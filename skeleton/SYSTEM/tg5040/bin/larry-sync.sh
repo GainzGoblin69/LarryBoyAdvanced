@@ -25,7 +25,7 @@ cd "$LARRY_HOME" || exit 1
 # must not wait behind a library sync (nor hold one up while File Access is
 # open), so they run alongside whatever else is running.
 case "$1" in
-music|files)
+music|files|pad)
 	exec "$SYSTEM_PATH/bin/larry-sync" "$@"
 	;;
 esac
