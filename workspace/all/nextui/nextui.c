@@ -3027,21 +3027,36 @@ static void Larry_controllerMode(void) {
 				backlight = 0;
 			}
 		}
-		SDL_Delay(2);
+		SDL_Delay(1); // a press reaches the TV within a millisecond or so of SDL seeing it
 	}
 
+	// straight away: the screen on, and saying what is happening
 	if (!backlight) PLAT_enableBacklight(1);
-	Larry_draw(LARRY_PAD_NAME, "Turning Bluetooth back to how it was...", -1, NULL, NULL);
+	Larry_draw(LARRY_PAD_NAME, "Stopping Controller Mode...", -1, NULL, NULL);
+	Larry_draw(LARRY_PAD_NAME, "Stopping Controller Mode...", -1, NULL, NULL); // both buffers
+
 	if (job) {
 		LarryJob_snapshot(job, &now);
 		LarryJob_cancel(job);
+		// it lets go of the TV at once; if it is stuck in a connect, it is ended
+		pid_t pid = now.pid;
+		for (int waited = 0; waited < 1500; waited += 20) {
+			LarryJob_snapshot(job, &now);
+			if (now.finished) break;
+			usleep(20000);
+		}
+		LarryJob_snapshot(job, &now);
+		if (!now.finished && pid > 0) kill(-pid, SIGKILL);
 		LarryJob_free(job);
 	}
 	if (pipe_fd >= 0) close(pipe_fd);
 	unlink(LARRY_PAD_FIFO);
 	unlink(LARRY_PAD_ACTIVE);
 	PAD_selectCombos = 1;
-	system("sh " SYSTEM_PATH "/bin/larry-pad-bt.sh stop");
+	// Bluetooth goes back to how it was (headphones and all) in the
+	// background: it takes a few seconds, and the menu need not wait
+	system("sh " SYSTEM_PATH "/bin/larry-pad-bt.sh stop >/dev/null 2>&1 &");
+	if (!failed && job) Larry_flash(LARRY_PAD_NAME, "Controller Mode stopped.");
 	Larry_afterModal();
 	if (failed || !job) {
 		char why[LARRY_TEXT + 96];
